@@ -47,15 +47,14 @@ st.markdown("""
 # Option 1: Microsoft OneDrive Share Links
 # Replace these with your actual OneDrive share links
 ONEDRIVE_FILES = {
-    "2023 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2023%20Database.csv?d=we657154067c940328761d938dedbc3be&csf=1&web=1&e=BE3VaU",  # Replace with actual share link
-    "2024 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2024%20Database.csv?d=w278f821dc65c482b98eea62c052938e1&csf=1&web=1&e=izcx4M",   # Replace with actual share link
-    "2025 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2025%20Database.csv?d=w47f555cd3ddb4db59156f788b2cbf512&csf=1&web=1&e=2Qg2xB"   # Replace with actual share link
+    "2023 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE",  # Replace with actual share link
+    "2024 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE"   # Replace with actual share link
 }
 
 # Option 2: Direct URL downloads (Dropbox, GitHub Releases, etc.)
 DIRECT_DOWNLOAD_URLS = {
-     #"2023 Database.csv": "https://www.dropbox.com/s/xxxxx/2023_Database.csv?dl=1",
-     #"2024 Database.csv": "https://github.com/yourusername/yourrepo/releases/download/v1.0/2024_Database.csv"
+    # "2023 Database.csv": "https://www.dropbox.com/s/xxxxx/2023_Database.csv?dl=1",
+    # "2024 Database.csv": "https://github.com/yourusername/yourrepo/releases/download/v1.0/2024_Database.csv"
 }
 
 # Option 3: Compressed pickle files in repository
@@ -69,26 +68,47 @@ def convert_onedrive_link_to_download(share_link):
     """Convert OneDrive share link to direct download link"""
     import base64
     
-    # OneDrive share links can be in different formats
-    # Format 1: https://1drv.ms/x/s!...
-    # Format 2: https://onedrive.live.com/...
-    
     try:
-        # Method 1: Using the embed URL transformation
-        # This works for most OneDrive share links
-        if "1drv.ms" in share_link or "onedrive.live.com" in share_link:
-            # Encode the URL to base64
-            encoded_url = base64.b64encode(share_link.encode()).decode()
-            # Remove padding
-            encoded_url = encoded_url.rstrip('=')
-            # Replace characters for URL safety
-            encoded_url = encoded_url.replace('/', '_').replace('+', '-')
-            # Create download URL
-            download_url = f"https://api.onedrive.com/v1.0/shares/u!{encoded_url}/root/content"
+        # Method 1: Direct download parameter
+        if "1drv.ms" in share_link:
+            # For short links, we need to follow redirects first
+            response = requests.get(share_link, allow_redirects=True)
+            actual_url = response.url
+            
+            # Convert to embed format then to download
+            if "my.sharepoint.com" in actual_url:
+                # Extract the download URL from the SharePoint URL
+                download_url = actual_url.replace("/personal/", "/:f:/g/personal/")
+                download_url = download_url.replace("?e=", "/download?e=")
+                return download_url
+            else:
+                # Try the API method
+                encoded_url = base64.b64encode(share_link.encode()).decode()
+                encoded_url = encoded_url.rstrip('=')
+                encoded_url = encoded_url.replace('/', '_').replace('+', '-')
+                download_url = f"https://api.onedrive.com/v1.0/shares/u!{encoded_url}/root/content"
+                return download_url
+                
+        elif "onedrive.live.com" in share_link:
+            # For OneDrive personal links
+            if "embed" in share_link:
+                # Convert embed to download
+                download_url = share_link.replace("embed", "download")
+            else:
+                # Add download parameter
+                download_url = share_link + "&download=1" if "?" in share_link else share_link + "?download=1"
             return download_url
+            
+        elif "sharepoint.com" in share_link:
+            # For SharePoint/OneDrive for Business links
+            download_url = share_link.replace("/personal/", "/:f:/g/personal/")
+            download_url = download_url.replace("?e=", "/download?e=")
+            return download_url
+            
         else:
-            # If it's already a direct download URL, return as is
-            return share_link
+            # Unknown format, try adding download parameter
+            return share_link + ("&download=1" if "?" in share_link else "?download=1")
+            
     except Exception as e:
         st.error(f"Error converting OneDrive link: {str(e)}")
         return share_link
@@ -96,27 +116,65 @@ def convert_onedrive_link_to_download(share_link):
 def download_from_onedrive(share_link):
     """Download file from OneDrive using share link"""
     try:
-        # Convert share link to download URL
-        download_url = convert_onedrive_link_to_download(share_link)
-        
-        # Download the file
+        # First, let's check what type of content we're getting
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        response = requests.get(download_url, headers=headers, timeout=300)
         
-        if response.status_code == 200:
-            return response.content
-        else:
-            st.error(f"Error downloading from OneDrive: HTTP {response.status_code}")
-            # Try alternative method
-            if "1drv.ms" in share_link:
-                # Try with download=1 parameter
-                alt_url = share_link + "?download=1"
-                response = requests.get(alt_url, headers=headers, timeout=300)
+        # Method 1: Try the converted download URL
+        download_url = convert_onedrive_link_to_download(share_link)
+        response = requests.get(download_url, headers=headers, timeout=300, allow_redirects=True)
+        
+        # Check if we got CSV content
+        content_type = response.headers.get('content-type', '').lower()
+        if response.status_code == 200 and ('csv' in content_type or 'text' in content_type or 'octet-stream' in content_type):
+            # Verify it's actually CSV by checking first few bytes
+            content_preview = response.content[:1000].decode('utf-8', errors='ignore')
+            if ',' in content_preview or '\t' in content_preview:  # Likely CSV
+                return response.content
+        
+        # Method 2: Try with requests session and cookies
+        session = requests.Session()
+        session.headers.update(headers)
+        
+        # First visit the share link to get cookies
+        initial_response = session.get(share_link, allow_redirects=True)
+        
+        # Try various download URL patterns
+        download_patterns = [
+            share_link + ("&download=1" if "?" in share_link else "?download=1"),
+            share_link.replace("view", "download"),
+            share_link.replace("redir", "download"),
+        ]
+        
+        for pattern in download_patterns:
+            try:
+                response = session.get(pattern, timeout=300, allow_redirects=True)
                 if response.status_code == 200:
-                    return response.content
-            return None
+                    # Check if it's CSV content
+                    content_preview = response.content[:1000].decode('utf-8', errors='ignore')
+                    if ',' in content_preview or '\t' in content_preview:
+                        return response.content
+            except:
+                continue
+        
+        # If all methods fail, show detailed error
+        st.error(f"""
+        Failed to download CSV from OneDrive. 
+        
+        Please ensure:
+        1. The file is a CSV file (not Excel)
+        2. The sharing permissions are set to "Anyone with the link can view"
+        3. You're using the correct share link
+        
+        Try creating a new share link with these steps:
+        - Right-click the CSV file in OneDrive
+        - Select "Share"
+        - Click "Copy link"
+        - Make sure "Anyone with the link can view" is selected
+        """)
+        
+        return None
             
     except Exception as e:
         st.error(f"Error downloading from OneDrive: {str(e)}")
@@ -144,13 +202,21 @@ def load_cloud_data():
     if ONEDRIVE_FILES and any(link != "YOUR_ONEDRIVE_SHARE_LINK_HERE" for link in ONEDRIVE_FILES.values()):
         for filename, share_link in ONEDRIVE_FILES.items():
             if share_link != "YOUR_ONEDRIVE_SHARE_LINK_HERE":
-                st.info(f"Downloading {filename} from OneDrive...")
-                content = download_from_onedrive(share_link)
-                if content:
-                    data_files.append({
-                        'name': filename,
-                        'data': content
-                    })
+                with st.spinner(f"Downloading {filename} from OneDrive..."):
+                    content = download_from_onedrive(share_link)
+                    if content:
+                        # Verify it's CSV content
+                        try:
+                            # Try to parse first few lines to verify it's CSV
+                            test_df = pd.read_csv(io.BytesIO(content), nrows=5)
+                            st.success(f"✓ Successfully downloaded {filename}")
+                            data_files.append({
+                                'name': filename,
+                                'data': content
+                            })
+                        except Exception as e:
+                            st.error(f"Downloaded file {filename} is not a valid CSV: {str(e)}")
+                            st.info("Make sure you're sharing the CSV file directly, not an Excel file or folder.")
     
     # Try direct URLs
     elif DIRECT_DOWNLOAD_URLS:
@@ -212,13 +278,20 @@ def load_from_secrets():
         # OneDrive files
         if 'onedrive' in sources:
             for filename, share_link in sources['onedrive'].items():
-                st.info(f"Downloading {filename} from OneDrive...")
-                content = download_from_onedrive(share_link)
-                if content:
-                    data_files.append({
-                        'name': filename,
-                        'data': content
-                    })
+                with st.spinner(f"Downloading {filename} from OneDrive..."):
+                    content = download_from_onedrive(share_link)
+                    if content:
+                        # Verify it's CSV content
+                        try:
+                            # Try to parse first few lines to verify it's CSV
+                            test_df = pd.read_csv(io.BytesIO(content), nrows=5)
+                            st.success(f"✓ Successfully downloaded {filename}")
+                            data_files.append({
+                                'name': filename,
+                                'data': content
+                            })
+                        except Exception as e:
+                            st.error(f"Downloaded file {filename} is not a valid CSV: {str(e)}")
         
         # Direct URLs
         elif 'urls' in sources:
@@ -949,23 +1022,35 @@ with st.sidebar:
     with st.expander("🔧 Configure Data Source"):
         st.markdown("""
         **Option 1: Microsoft OneDrive**
-        1. Upload files to OneDrive
-        2. Right-click → Share → Copy link
-        3. Update ONEDRIVE_FILES in code with share links
         
-        **Option 2: Streamlit Secrets**
-        1. Go to app settings
-        2. Add secrets in TOML format:
+        **Getting the Correct Share Link:**
+        1. Upload CSV files to OneDrive (not Excel files!)
+        2. Right-click the CSV file → "Share"
+        3. Set to "Anyone with the link can view"
+        4. Click "Copy link"
+        
+        **Common Issues:**
+        - ❌ Sharing a folder instead of individual files
+        - ❌ Using .xlsx files instead of .csv
+        - ❌ Wrong permission settings
+        - ✅ Each CSV file needs its own share link
+        
+        **Option 2: Streamlit Secrets (Recommended)**
+        1. Go to your Streamlit app settings
+        2. Click "Secrets" in the menu
+        3. Add this configuration:
         ```toml
         [data_sources.onedrive]
-        "2023 Database.csv" = "https://1drv.ms/..."
-        "2024 Database.csv" = "https://1drv.ms/..."
+        "2023 Database.csv" = "paste_link_here"
+        "2024 Database.csv" = "paste_link_here"
+        "2025 Database.csv" = "paste_link_here"
         ```
         
-        **Option 3: Compressed Data**
-        1. Run preprocessing locally
-        2. Upload compressed .pkl.gz files
-        3. Place in /compressed_data folder
+        **Option 3: GitHub Releases**
+        For files larger than 25MB:
+        1. Create a release in your repo
+        2. Upload CSV files as assets
+        3. Use the asset download URLs
         """)
     
     st.header("📅 Prediction Period")
@@ -1335,38 +1420,53 @@ def main():
                 ## Choose Your Data Storage Solution:
                 
                 ### Option 1: Microsoft OneDrive (Recommended)
+                
+                **Important**: Make sure you're sharing CSV files, not Excel files!
+                
+                **For OneDrive Personal:**
                 1. Upload your CSV files to OneDrive
-                2. Right-click each file → "Share" → "Copy link"
-                3. Make sure link settings allow "Anyone with the link can view"
-                4. Use Streamlit Secrets to store share links:
-                   ```toml
-                   [data_sources.onedrive]
-                   "2023 Database.csv" = "https://1drv.ms/x/s!AbCdEfGhIjKlMnOpQrStUvWxYz"
-                   "2024 Database.csv" = "https://1drv.ms/x/s!BcDeFgHiJkLmNoPqRsTuVwXyZa"
-                   ```
+                2. Right-click the CSV file → "Share" → "Copy link"
+                3. Ensure "Anyone with the link can view" is selected
+                4. The link should look like: `https://1drv.ms/...`
                 
-                ### Option 2: Dropbox
-                1. Upload files to Dropbox
-                2. Get shareable links
-                3. Change `?dl=0` to `?dl=1` in the URL
-                4. Use Streamlit Secrets:
-                   ```toml
-                   [data_sources.urls]
-                   "2023 Database.csv" = "https://www.dropbox.com/s/xxx/file.csv?dl=1"
-                   ```
+                **For OneDrive Business/SharePoint:**
+                1. Upload CSV files to OneDrive for Business
+                2. Right-click → "Share" → "People you specify can view"
+                3. Change to "Anyone with the link" → "Copy"
+                4. The link should contain `sharepoint.com`
                 
-                ### Option 3: GitHub Releases (for files > 25MB)
-                1. Create a release in your GitHub repo
+                **Configure in Streamlit Secrets:**
+                ```toml
+                [data_sources.onedrive]
+                "2023 Database.csv" = "https://1drv.ms/x/s!AbCdEfGhIjKlMnOpQrStUvWxYz"
+                "2024 Database.csv" = "https://1drv.ms/x/s!BcDeFgHiJkLmNoPqRsTuVwXyZa"
+                ```
+                
+                **Troubleshooting OneDrive:**
+                - ❌ Don't share folders, share individual CSV files
+                - ❌ Don't use Excel files (.xlsx), convert to CSV first
+                - ✅ Test the link in an incognito browser window
+                - ✅ Make sure permissions are "Anyone with link can view"
+                
+                ### Option 2: GitHub Releases (Alternative for large files)
+                1. Go to your GitHub repo → "Releases" → "Create new release"
                 2. Upload CSV files as release assets
-                3. Use the direct download URLs
+                3. Copy the direct download URLs
+                4. Use in Streamlit Secrets:
+                ```toml
+                [data_sources.urls]
+                "2023 Database.csv" = "https://github.com/user/repo/releases/download/v1.0/2023_Database.csv"
+                ```
                 
-                ### Option 4: Pre-processed Compressed Data
-                1. Run preprocessing script locally
-                2. Create compressed pickle files
-                3. Upload to `/compressed_data` folder (under 25MB each)
+                ### Option 3: Dropbox
+                1. Upload files to Dropbox
+                2. Create share link → Copy link
+                3. Change `?dl=0` to `?dl=1` at the end
+                4. Use in Streamlit Secrets
                 
-                ### Option 5: Manual Upload
+                ### Option 4: Manual Upload
                 - Check "Upload Custom Data" in the sidebar
+                - Upload files directly each time
                 """)
     
     except Exception as e:
