@@ -309,9 +309,9 @@ def load_and_process_data():
     else:
         # Use hardcoded URLs (for development)
         urls = {
-            "2023 Database.csv": "YOUR_URL_HERE",
-            "2024 Database.csv": "YOUR_URL_HERE",
-            "2025 Database.csv": "YOUR_URL_HERE"
+            "2023 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2023%20Database.csv?d=we657154067c940328761d938dedbc3be&csf=1&web=1&e=MAdmc5E",
+            "2024 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2024%20Database.csv?d=w278f821dc65c482b98eea62c052938e1&csf=1&web=1&e=KftCMZ",
+            "2025 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2025%20Database.csv?d=w47f555cd3ddb4db59156f788b2cbf512&csf=1&web=1&e=kEMwo8"
         }
     
     # Download files
