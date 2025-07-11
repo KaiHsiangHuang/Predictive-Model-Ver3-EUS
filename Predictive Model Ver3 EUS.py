@@ -48,17 +48,17 @@ st.markdown("""
 # Option 1: Microsoft OneDrive Share Links
 # Replace these with your actual OneDrive share links
 ONEDRIVE_FILES = {
-    #"2023 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE",  # Replace with actual share link
-    #"2024 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE",  # Replace with actual share link
-    #"2025 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE"   # Replace with actual share link
+    "2023 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE",  # Replace with actual share link
+    "2024 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE",  # Replace with actual share link
+    "2025 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE"   # Replace with actual share link
 }
 
 # Option 2: Direct URL downloads (Dropbox, GitHub Releases, etc.)
 DIRECT_DOWNLOAD_URLS = {
-    https://networkrail-my.sharepoint.com/personal/khuang_networkrail_co_uk/_layouts/15/download.aspx?SourceUrl=/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2023%20Database.csv,
-    https://networkrail-my.sharepoint.com/personal/khuang_networkrail_co_uk/_layouts/15/download.aspx?SourceUrl=/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2024%20Database.csv,
-    https://networkrail-my.sharepoint.com/personal/khuang_networkrail_co_uk/_layouts/15/download.aspx?SourceUrl=/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2025%20Database.csv
+    # "2023 Database.csv": "https://www.dropbox.com/s/xxxxx/2023_Database.csv?dl=1",
+    # "2024 Database.csv": "https://github.com/yourusername/yourrepo/releases/download/v1.0/2024_Database.csv"
 }
+
 # Option 3: Compressed pickle files in repository
 COMPRESSED_DATA_PATH = "compressed_data"
 
