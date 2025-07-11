@@ -13,6 +13,7 @@ import io
 import gzip
 import pickle
 import base64
+import re
 
 from scipy import stats
 from sklearn.linear_model import LinearRegression
@@ -47,135 +48,195 @@ st.markdown("""
 # Option 1: Microsoft OneDrive Share Links
 # Replace these with your actual OneDrive share links
 ONEDRIVE_FILES = {
-    "2023 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE",  # Replace with actual share link
-    "2024 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE"   # Replace with actual share link
+    #"2023 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE",  # Replace with actual share link
+    #"2024 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE",  # Replace with actual share link
+    #"2025 Database.csv": "YOUR_ONEDRIVE_SHARE_LINK_HERE"   # Replace with actual share link
 }
 
 # Option 2: Direct URL downloads (Dropbox, GitHub Releases, etc.)
 DIRECT_DOWNLOAD_URLS = {
-    # "2023 Database.csv": "https://www.dropbox.com/s/xxxxx/2023_Database.csv?dl=1",
-    # "2024 Database.csv": "https://github.com/yourusername/yourrepo/releases/download/v1.0/2024_Database.csv"
+    https://networkrail-my.sharepoint.com/personal/khuang_networkrail_co_uk/_layouts/15/download.aspx?SourceUrl=/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2023%20Database.csv,
+    https://networkrail-my.sharepoint.com/personal/khuang_networkrail_co_uk/_layouts/15/download.aspx?SourceUrl=/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2024%20Database.csv,
+    https://networkrail-my.sharepoint.com/personal/khuang_networkrail_co_uk/_layouts/15/download.aspx?SourceUrl=/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2025%20Database.csv
 }
-
 # Option 3: Compressed pickle files in repository
 COMPRESSED_DATA_PATH = "compressed_data"
+
+# Test mode - set to True to test OneDrive links
+TEST_MODE = False
 
 # ============================================================================
 # DATA LOADING FUNCTIONS
 # ============================================================================
 
-def convert_onedrive_link_to_download(share_link):
+def get_onedrive_direct_link(share_url):
     """Convert OneDrive share link to direct download link"""
+    import re
     import base64
     
-    try:
-        # Method 1: Direct download parameter
-        if "1drv.ms" in share_link:
-            # For short links, we need to follow redirects first
-            response = requests.get(share_link, allow_redirects=True)
-            actual_url = response.url
+    # For OneDrive Personal links (1drv.ms)
+    if "1drv.ms" in share_url:
+        # These are shortened links, we need to get the actual URL
+        try:
+            # The most reliable method for OneDrive personal
+            # Replace 'embed' with 'download' if present
+            if "/embed" in share_url:
+                return share_url.replace("/embed", "/download")
             
-            # Convert to embed format then to download
-            if "my.sharepoint.com" in actual_url:
-                # Extract the download URL from the SharePoint URL
-                download_url = actual_url.replace("/personal/", "/:f:/g/personal/")
-                download_url = download_url.replace("?e=", "/download?e=")
-                return download_url
+            # For regular share links, we need to transform them
+            # OneDrive personal direct download format
+            return share_url.replace("/redir", "/download").replace("/view", "/download") + "&download=1"
+            
+        except Exception as e:
+            st.error(f"Error converting OneDrive personal link: {str(e)}")
+            return None
+    
+    # For OneDrive Business/SharePoint links
+    elif "sharepoint.com" in share_url:
+        try:
+            # Extract the necessary parts from the SharePoint URL
+            if "/:u:/" in share_url or "/:x:/" in share_url or "/:t:/" in share_url:
+                # This is already in a good format, just add download
+                return share_url + "&download=1"
             else:
-                # Try the API method
-                encoded_url = base64.b64encode(share_link.encode()).decode()
-                encoded_url = encoded_url.rstrip('=')
-                encoded_url = encoded_url.replace('/', '_').replace('+', '-')
-                download_url = f"https://api.onedrive.com/v1.0/shares/u!{encoded_url}/root/content"
-                return download_url
+                # Convert regular sharepoint links
+                # Replace /personal/ with /:f:/g/personal/ for files
+                modified_url = share_url.replace("/personal/", "/:f:/g/personal/")
+                # Add download parameter
+                if "?" in modified_url:
+                    return modified_url + "&download=1"
+                else:
+                    return modified_url + "?download=1"
+                    
+        except Exception as e:
+            st.error(f"Error converting SharePoint link: {str(e)}")
+            return None
+    
+    # For OneDrive embed links
+    elif "onedrive.live.com" in share_url:
+        try:
+            if "embed" in share_url:
+                # Extract the important parts and create download link
+                cid_match = re.search(r'cid=([A-F0-9]+)', share_url, re.IGNORECASE)
+                resid_match = re.search(r'resid=([A-F0-9%]+)', share_url, re.IGNORECASE)
                 
-        elif "onedrive.live.com" in share_link:
-            # For OneDrive personal links
-            if "embed" in share_link:
-                # Convert embed to download
-                download_url = share_link.replace("embed", "download")
+                if cid_match and resid_match:
+                    cid = cid_match.group(1)
+                    resid = resid_match.group(1)
+                    # Create direct download link
+                    return f"https://onedrive.live.com/download?cid={cid}&resid={resid}"
+                else:
+                    # Fallback: try replacing embed with download
+                    return share_url.replace("embed", "download")
             else:
                 # Add download parameter
-                download_url = share_link + "&download=1" if "?" in share_link else share_link + "?download=1"
-            return download_url
-            
-        elif "sharepoint.com" in share_link:
-            # For SharePoint/OneDrive for Business links
-            download_url = share_link.replace("/personal/", "/:f:/g/personal/")
-            download_url = download_url.replace("?e=", "/download?e=")
-            return download_url
-            
+                if "?" in share_url:
+                    return share_url + "&download=1"
+                else:
+                    return share_url + "?download=1"
+                    
+        except Exception as e:
+            st.error(f"Error converting OneDrive live link: {str(e)}")
+            return None
+    
+    else:
+        # Unknown format, try adding download parameter
+        if "?" in share_url:
+            return share_url + "&download=1"
         else:
-            # Unknown format, try adding download parameter
-            return share_link + ("&download=1" if "?" in share_link else "?download=1")
-            
-    except Exception as e:
-        st.error(f"Error converting OneDrive link: {str(e)}")
-        return share_link
+            return share_url + "?download=1"
 
 def download_from_onedrive(share_link):
     """Download file from OneDrive using share link"""
     try:
-        # First, let's check what type of content we're getting
+        # Get direct download link
+        direct_link = get_onedrive_direct_link(share_link)
+        
+        if not direct_link:
+            st.error("Could not convert OneDrive link to download format")
+            return None
+        
+        # Headers to mimic browser request
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
         
-        # Method 1: Try the converted download URL
-        download_url = convert_onedrive_link_to_download(share_link)
-        response = requests.get(download_url, headers=headers, timeout=300, allow_redirects=True)
-        
-        # Check if we got CSV content
-        content_type = response.headers.get('content-type', '').lower()
-        if response.status_code == 200 and ('csv' in content_type or 'text' in content_type or 'octet-stream' in content_type):
-            # Verify it's actually CSV by checking first few bytes
-            content_preview = response.content[:1000].decode('utf-8', errors='ignore')
-            if ',' in content_preview or '\t' in content_preview:  # Likely CSV
-                return response.content
-        
-        # Method 2: Try with requests session and cookies
+        # Create session for better cookie handling
         session = requests.Session()
         session.headers.update(headers)
         
-        # First visit the share link to get cookies
-        initial_response = session.get(share_link, allow_redirects=True)
+        # First, try the direct link
+        response = session.get(direct_link, allow_redirects=True, timeout=60)
         
-        # Try various download URL patterns
-        download_patterns = [
-            share_link + ("&download=1" if "?" in share_link else "?download=1"),
-            share_link.replace("view", "download"),
-            share_link.replace("redir", "download"),
-        ]
+        # Check if we got actual CSV content
+        content_type = response.headers.get('content-type', '').lower()
         
-        for pattern in download_patterns:
+        if response.status_code == 200:
+            # Check if it's actually CSV data
             try:
-                response = session.get(pattern, timeout=300, allow_redirects=True)
-                if response.status_code == 200:
-                    # Check if it's CSV content
-                    content_preview = response.content[:1000].decode('utf-8', errors='ignore')
-                    if ',' in content_preview or '\t' in content_preview:
-                        return response.content
+                # Try to decode first 1000 bytes as text
+                sample = response.content[:1000].decode('utf-8', errors='ignore')
+                
+                # Check for CSV indicators
+                if any(indicator in sample for indicator in [',', '\t', 'station_code', 'booking']):
+                    return response.content
+                elif '<html' in sample.lower():
+                    # We got an HTML page instead of the file
+                    st.error("""
+                    ❌ OneDrive returned a web page instead of the CSV file.
+                    
+                    Please try this method to get the correct link:
+                    1. Open the file in OneDrive
+                    2. Click the "Download" button (not share)
+                    3. While download starts, right-click and copy the download link
+                    4. Use that direct download link instead
+                    """)
+                    return None
             except:
-                continue
+                # If we can't decode as text, might still be valid binary CSV
+                pass
         
-        # If all methods fail, show detailed error
+        # If first attempt failed, try alternative methods
+        if response.status_code != 200 or 'html' in content_type:
+            # Try with different parameters
+            alternative_urls = [
+                share_link + "&download=1",
+                share_link.replace("view?", "download?"),
+                share_link.replace("/view", "/download"),
+                share_link.replace("?e=", "/download?e=")
+            ]
+            
+            for alt_url in alternative_urls:
+                try:
+                    response = session.get(alt_url, allow_redirects=True, timeout=60)
+                    if response.status_code == 200:
+                        sample = response.content[:1000].decode('utf-8', errors='ignore')
+                        if not '<html' in sample.lower():
+                            return response.content
+                except:
+                    continue
+        
         st.error(f"""
-        Failed to download CSV from OneDrive. 
+        ❌ Failed to download from OneDrive (Status: {response.status_code})
         
-        Please ensure:
-        1. The file is a CSV file (not Excel)
-        2. The sharing permissions are set to "Anyone with the link can view"
-        3. You're using the correct share link
+        Common issues:
+        - File might be in a folder (need direct file link)
+        - Permissions might be restricted
+        - Link might have expired
         
-        Try creating a new share link with these steps:
-        - Right-click the CSV file in OneDrive
-        - Select "Share"
-        - Click "Copy link"
-        - Make sure "Anyone with the link can view" is selected
+        Try getting a fresh share link with "Anyone with link can view" permission.
         """)
         
         return None
             
+    except requests.exceptions.Timeout:
+        st.error("Download timed out. The file might be too large or the connection is slow.")
+        return None
     except Exception as e:
         st.error(f"Error downloading from OneDrive: {str(e)}")
         return None
@@ -215,8 +276,28 @@ def load_cloud_data():
                                 'data': content
                             })
                         except Exception as e:
-                            st.error(f"Downloaded file {filename} is not a valid CSV: {str(e)}")
-                            st.info("Make sure you're sharing the CSV file directly, not an Excel file or folder.")
+                            st.error(f"""
+                            ❌ {filename} downloaded but is not a valid CSV file.
+                            
+                            **Common causes:**
+                            - File is Excel format (.xlsx) instead of CSV
+                            - File is corrupted or empty
+                            - Wrong file was shared
+                            
+                            Please verify the file is in CSV format and try again.
+                            """)
+                    else:
+                        st.error(f"""
+                        ❌ Failed to download {filename}
+                        
+                        **Try this:**
+                        1. Open the file in OneDrive
+                        2. Click "Download" button
+                        3. Right-click the download → "Copy download link"
+                        4. Use that link instead
+                        
+                        Or use the "Test OneDrive Link" feature in the sidebar.
+                        """)
     
     # Try direct URLs
     elif DIRECT_DOWNLOAD_URLS:
@@ -277,6 +358,7 @@ def load_from_secrets():
         
         # OneDrive files
         if 'onedrive' in sources:
+            st.info("Loading files from OneDrive (configured in Secrets)...")
             for filename, share_link in sources['onedrive'].items():
                 with st.spinner(f"Downloading {filename} from OneDrive..."):
                     content = download_from_onedrive(share_link)
@@ -291,7 +373,21 @@ def load_from_secrets():
                                 'data': content
                             })
                         except Exception as e:
-                            st.error(f"Downloaded file {filename} is not a valid CSV: {str(e)}")
+                            st.error(f"""
+                            ❌ {filename} is not a valid CSV file.
+                            
+                            Please check:
+                            - File is in CSV format (not .xlsx)
+                            - File is not corrupted
+                            - Correct file was shared
+                            """)
+                    else:
+                        st.error(f"""
+                        ❌ Failed to download {filename}
+                        
+                        Check your OneDrive link in Streamlit Secrets.
+                        Use the "Test OneDrive Link" feature to verify.
+                        """)
         
         # Direct URLs
         elif 'urls' in sources:
@@ -912,6 +1008,7 @@ if not st.session_state.data_loaded and not st.session_state.use_uploaded_data:
         
         # Try different data sources in order
         data_loaded = False
+        error_messages = []
         
         # 1. Try Streamlit secrets first
         if not data_loaded:
@@ -920,8 +1017,8 @@ if not st.session_state.data_loaded and not st.session_state.use_uploaded_data:
                 if data_files:
                     st.session_state.data_source = "Streamlit Secrets"
                     data_loaded = True
-            except:
-                pass
+            except Exception as e:
+                error_messages.append(f"Secrets: {str(e)}")
         
         # 2. Try compressed data
         if not data_loaded:
@@ -939,31 +1036,42 @@ if not st.session_state.data_loaded and not st.session_state.use_uploaded_data:
         
         # 3. Try cloud storage
         if not data_loaded:
-            data_files = load_cloud_data()
-            if data_files:
-                st.session_state.data_source = "Cloud Storage"
-                data_loaded = True
+            try:
+                data_files = load_cloud_data()
+                if data_files:
+                    st.session_state.data_source = "Cloud Storage"
+                    data_loaded = True
+            except Exception as e:
+                error_messages.append(f"Cloud Storage: {str(e)}")
         
         # Process data files if loaded
-        if data_loaded and not st.session_state.data_loaded and data_files:
-            processed_years, raw_data, has_prebooking_data = process_data_files(data_files)
-            
-            if processed_years and len(processed_years) >= 2:
-                st.session_state.processed_years = processed_years
-                st.session_state.raw_data = raw_data
-                st.session_state.has_prebooking_data = has_prebooking_data
-                st.session_state.data_loaded = True
+        if data_loaded and not st.session_state.data_loaded and 'data_files' in locals() and data_files:
+            try:
+                processed_years, raw_data, has_prebooking_data = process_data_files(data_files)
                 
-                # Train model
-                st.session_state.model = train_cached_model(processed_years)
-                
-                # Analyze prebookings if available
-                if raw_data is not None and has_prebooking_data:
-                    st.session_state.prebooking_analyzer = analyze_cached_prebookings(raw_data)
-                
-                st.success(f"✅ Loaded {len(processed_years)} years of data from {st.session_state.data_source}")
-            else:
-                st.warning("Data files not found. Please configure data source or upload manually.")
+                if processed_years and len(processed_years) >= 2:
+                    st.session_state.processed_years = processed_years
+                    st.session_state.raw_data = raw_data
+                    st.session_state.has_prebooking_data = has_prebooking_data
+                    st.session_state.data_loaded = True
+                    
+                    # Train model
+                    st.session_state.model = train_cached_model(processed_years)
+                    
+                    # Analyze prebookings if available
+                    if raw_data is not None and has_prebooking_data:
+                        st.session_state.prebooking_analyzer = analyze_cached_prebookings(raw_data)
+                    
+                    st.success(f"✅ Loaded {len(processed_years)} years of data from {st.session_state.data_source}")
+                else:
+                    st.warning("Need at least 2 years of historical data")
+                    if error_messages:
+                        with st.expander("🔍 Error Details"):
+                            for msg in error_messages:
+                                st.text(msg)
+            except Exception as e:
+                st.error(f"Error processing data files: {str(e)}")
+                error_messages.append(f"Processing: {str(e)}")
 
 # ============================================================================
 # SIDEBAR (rest of the code remains the same)
@@ -1015,42 +1123,83 @@ with st.sidebar:
                     st.success(f"✅ Processed {len(uploaded_files)} files successfully")
                 else:
                     st.error("Need at least 2 years of historical data")
-    else:
-        st.session_state.use_uploaded_data = False
+    # Option to test OneDrive links
+    with st.expander("🧪 Test OneDrive Link"):
+        st.markdown("Test if your OneDrive link works before adding to Secrets")
+        
+        test_link = st.text_input(
+            "Paste OneDrive share link to test:",
+            placeholder="https://1drv.ms/..."
+        )
+        
+        if st.button("Test Link"):
+            if test_link:
+                with st.spinner("Testing OneDrive link..."):
+                    try:
+                        # Get direct link
+                        direct_link = get_onedrive_direct_link(test_link)
+                        st.info(f"Converted to: {direct_link[:50]}...")
+                        
+                        # Try to download
+                        content = download_from_onedrive(test_link)
+                        
+                        if content:
+                            # Check if it's CSV
+                            try:
+                                df_test = pd.read_csv(io.BytesIO(content), nrows=5)
+                                st.success("✅ Link works! File appears to be valid CSV")
+                                st.write("First few rows:")
+                                st.dataframe(df_test)
+                            except:
+                                st.error("❌ File downloaded but doesn't appear to be valid CSV")
+                        else:
+                            st.error("❌ Could not download file from this link")
+                            
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+            else:
+                st.warning("Please enter a link to test")
     
     # Add configuration help
-    with st.expander("🔧 Configure Data Source"):
+    with st.expander("🔧 OneDrive Setup Guide"):
         st.markdown("""
-        **Option 1: Microsoft OneDrive**
+        ### Getting the Right OneDrive Link
         
-        **Getting the Correct Share Link:**
-        1. Upload CSV files to OneDrive (not Excel files!)
-        2. Right-click the CSV file → "Share"
-        3. Set to "Anyone with the link can view"
+        **For OneDrive Personal:**
+        1. Upload your CSV files to OneDrive
+        2. Right-click the file → "Share"
+        3. Click "Anyone with the link can view"
+        4. Click "Copy link"
+        5. The link should look like: `https://1drv.ms/...`
+        
+        **For OneDrive Business/SharePoint:**
+        1. Upload CSV files to OneDrive for Business
+        2. Select the file → Click "Share" button
+        3. Under "Link settings":
+           - Choose "Anyone with the link"
+           - Uncheck "Allow editing"
+           - Click "Apply"
         4. Click "Copy link"
         
-        **Common Issues:**
-        - ❌ Sharing a folder instead of individual files
-        - ❌ Using .xlsx files instead of .csv
-        - ❌ Wrong permission settings
-        - ✅ Each CSV file needs its own share link
+        **Important Tips:**
+        ✅ Share individual CSV files, not folders
+        ✅ Make sure files are .csv format, not .xlsx
+        ✅ Set permission to "Anyone with the link can view"
+        ✅ Test the link in an incognito browser window
         
-        **Option 2: Streamlit Secrets (Recommended)**
-        1. Go to your Streamlit app settings
-        2. Click "Secrets" in the menu
-        3. Add this configuration:
+        **Alternative Method (Most Reliable):**
+        1. Open the CSV file in OneDrive web interface
+        2. Click "Download" button at the top
+        3. When download starts, right-click → "Copy download link"
+        4. Use this direct download link instead
+        
+        **Configure in Streamlit Secrets:**
         ```toml
         [data_sources.onedrive]
-        "2023 Database.csv" = "paste_link_here"
-        "2024 Database.csv" = "paste_link_here"
-        "2025 Database.csv" = "paste_link_here"
+        "2023 Database.csv" = "paste_your_link_here"
+        "2024 Database.csv" = "paste_your_link_here"
+        "2025 Database.csv" = "paste_your_link_here"
         ```
-        
-        **Option 3: GitHub Releases**
-        For files larger than 25MB:
-        1. Create a release in your repo
-        2. Upload CSV files as assets
-        3. Use the asset download URLs
         """)
     
     st.header("📅 Prediction Period")
@@ -1084,32 +1233,50 @@ with st.sidebar:
     # Prebooking inputs section
     st.header("📋 Current Prebookings")
     
-    if enable_prebooking and st.session_state.has_prebooking_data:
-        st.markdown("*Enter current prebooking numbers (optional)*")
-        
-        prebooking_inputs = {}
-        for i in range(7):
-            date = start_date + timedelta(days=i)
-            days_until = (date - datetime.now().date()).days
+    if not st.session_state.data_loaded:
+        st.info("Load data first to enable prebooking analysis")
+    elif enable_prebooking:
+        if st.session_state.has_prebooking_data:
+            st.markdown("*Enter current prebooking numbers for enhanced predictions*")
             
-            if days_until > 0:
-                prebooking_inputs[date] = st.number_input(
-                    f"{date.strftime('%a %d/%m')} ({days_until}d away)",
-                    min_value=0,
-                    value=0,
-                    help=f"Current prebookings for {date.strftime('%A')}"
-                )
-        
-        use_prebooking = st.checkbox(
-            "Apply Prebooking Analysis",
-            value=True,
-            help="Use prebooking patterns to refine predictions"
-        )
-    else:
-        if not st.session_state.has_prebooking_data:
-            st.warning("Prebooking analysis not available (no booking_created_date in data)")
+            prebooking_inputs = {}
+            for i in range(7):
+                date = start_date + timedelta(days=i)
+                days_until = (date - datetime.now().date()).days
+                
+                if days_until > 0:
+                    prebooking_inputs[date] = st.number_input(
+                        f"{date.strftime('%a %d/%m')} ({days_until}d away)",
+                        min_value=0,
+                        value=0,
+                        step=1,
+                        help=f"How many bookings already made for {date.strftime('%A')}?"
+                    )
+            
+            use_prebooking = st.checkbox(
+                "Apply Prebooking Analysis",
+                value=True,
+                help="Adjust predictions based on current booking levels"
+            )
+            
+            st.info("""
+            💡 **How it works:**
+            - Enter the number of bookings already made for each day
+            - The model compares this to historical patterns
+            - Predictions adjust if bookings are unusually high/low
+            """)
         else:
-            st.warning("Prebooking analysis only available for predictions within next 7 days")
+            st.warning("""
+            ⚠️ Prebooking analysis unavailable
+            
+            The historical data doesn't include booking creation dates.
+            To enable this feature, your CSV files need a 
+            'booking_created_date' column.
+            """)
+            prebooking_inputs = {}
+            use_prebooking = False
+    else:
+        st.info("Prebooking analysis available for predictions within next 7 days")
         prebooking_inputs = {}
         use_prebooking = False
     
@@ -1413,60 +1580,93 @@ def main():
             )
             
         else:
-            st.info("👆 Configuring data source...")
+            st.warning("⚠️ No data loaded yet")
             
-            with st.expander("📚 Setup Instructions"):
+            # Provide clear instructions
+            col1, col2 = st.columns(2)
+            
+            with col1:
                 st.markdown("""
-                ## Choose Your Data Storage Solution:
+                ### 📤 Option 1: Upload Files Now
                 
-                ### Option 1: Microsoft OneDrive (Recommended)
+                **Quick Start:**
+                1. Click "Upload Custom Data" in the sidebar
+                2. Select your CSV files (2023, 2024, 2025)
+                3. Click "Process Uploaded Data"
                 
-                **Important**: Make sure you're sharing CSV files, not Excel files!
+                This is the simplest method if you have the files ready.
+                """)
+            
+            with col2:
+                st.markdown("""
+                ### 🔗 Option 2: OneDrive Setup
                 
-                **For OneDrive Personal:**
-                1. Upload your CSV files to OneDrive
-                2. Right-click the CSV file → "Share" → "Copy link"
-                3. Ensure "Anyone with the link can view" is selected
-                4. The link should look like: `https://1drv.ms/...`
+                **For automatic loading:**
+                1. Get OneDrive share links for your CSV files
+                2. Configure in Streamlit Secrets
+                3. Files will load automatically on app start
                 
-                **For OneDrive Business/SharePoint:**
-                1. Upload CSV files to OneDrive for Business
-                2. Right-click → "Share" → "People you specify can view"
-                3. Change to "Anyone with the link" → "Copy"
-                4. The link should contain `sharepoint.com`
+                See instructions below for setup details.
+                """)
+            
+            with st.expander("📚 Complete OneDrive Setup Instructions"):
+                st.markdown("""
+                ## Setting Up OneDrive for Automatic Data Loading
                 
-                **Configure in Streamlit Secrets:**
+                ### Step 1: Prepare Your Files
+                - Make sure your files are in **CSV format** (not Excel .xlsx)
+                - Files should be named like: `2023 Database.csv`, `2024 Database.csv`, etc.
+                
+                ### Step 2: Upload to OneDrive
+                1. Go to [OneDrive](https://onedrive.com)
+                2. Upload your CSV files
+                3. Wait for upload to complete
+                
+                ### Step 3: Get Share Links
+                
+                **Method A: Standard Share Link**
+                1. Right-click on a CSV file
+                2. Select "Share"
+                3. Click "Anyone with the link can view"
+                4. Click "Copy link"
+                
+                **Method B: Direct Download Link (More Reliable)**
+                1. Click on the CSV file to open it
+                2. Click the "Download" button at the top
+                3. When download starts, right-click the download
+                4. Select "Copy download link"
+                
+                ### Step 4: Configure Streamlit Secrets
+                1. Go to your Streamlit app dashboard
+                2. Click on your app → Settings → Secrets
+                3. Add this configuration:
+                
                 ```toml
                 [data_sources.onedrive]
-                "2023 Database.csv" = "https://1drv.ms/x/s!AbCdEfGhIjKlMnOpQrStUvWxYz"
-                "2024 Database.csv" = "https://1drv.ms/x/s!BcDeFgHiJkLmNoPqRsTuVwXyZa"
+                "2023 Database.csv" = "https://1drv.ms/x/s!YourLinkHere"
+                "2024 Database.csv" = "https://1drv.ms/x/s!YourLinkHere"
+                "2025 Database.csv" = "https://1drv.ms/x/s!YourLinkHere"
                 ```
                 
-                **Troubleshooting OneDrive:**
-                - ❌ Don't share folders, share individual CSV files
-                - ❌ Don't use Excel files (.xlsx), convert to CSV first
-                - ✅ Test the link in an incognito browser window
-                - ✅ Make sure permissions are "Anyone with link can view"
+                4. Click "Save"
+                5. Your app will restart and load the files automatically
                 
-                ### Option 2: GitHub Releases (Alternative for large files)
-                1. Go to your GitHub repo → "Releases" → "Create new release"
-                2. Upload CSV files as release assets
-                3. Copy the direct download URLs
-                4. Use in Streamlit Secrets:
-                ```toml
-                [data_sources.urls]
-                "2023 Database.csv" = "https://github.com/user/repo/releases/download/v1.0/2023_Database.csv"
-                ```
+                ### Troubleshooting OneDrive Issues
                 
-                ### Option 3: Dropbox
-                1. Upload files to Dropbox
-                2. Create share link → Copy link
-                3. Change `?dl=0` to `?dl=1` at the end
-                4. Use in Streamlit Secrets
+                **If downloads fail:**
+                - ❌ Don't use folder links - share individual files
+                - ❌ Don't use Excel files - convert to CSV first
+                - ✅ Make sure permission is "Anyone with the link can view"
+                - ✅ Try Method B (direct download link) if Method A fails
+                - ✅ Test your link in an incognito browser window
                 
-                ### Option 4: Manual Upload
-                - Check "Upload Custom Data" in the sidebar
-                - Upload files directly each time
+                **Common OneDrive Link Formats:**
+                - Personal: `https://1drv.ms/x/s!AbCdEf...`
+                - Business: `https://companyname-my.sharepoint.com/...`
+                
+                **If OneDrive still doesn't work:**
+                Consider using the manual upload option instead - it's more reliable
+                and your data stays completely private.
                 """)
     
     except Exception as e:
@@ -1474,37 +1674,6 @@ def main():
         with st.expander("🔍 Error Details"):
             import traceback
             st.code(traceback.format_exc())
-
-# Preprocessing script (save this separately as preprocess_data.py)
-"""
-# Run this script locally to create compressed data files
-import pandas as pd
-import gzip
-import pickle
-import os
-
-def preprocess_and_compress(csv_files_directory, output_directory="compressed_data"):
-    os.makedirs(output_directory, exist_ok=True)
-    
-    for filename in os.listdir(csv_files_directory):
-        if filename.endswith('.csv'):
-            year = int(filename.split()[0])
-            df = pd.read_csv(os.path.join(csv_files_directory, filename))
-            
-            # Process data (same as in main app)
-            df_euston = df[df['station_code'] == "EUS"].copy()
-            # ... rest of processing ...
-            
-            # Save compressed
-            output_file = os.path.join(output_directory, f"{year}_processed.pkl.gz")
-            with gzip.open(output_file, 'wb') as f:
-                pickle.dump(processed_data, f)
-            
-            print(f"Compressed {filename} to {os.path.getsize(output_file) / 1024 / 1024:.1f}MB")
-
-if __name__ == "__main__":
-    preprocess_and_compress("path/to/your/csv/files")
-"""
 
 if __name__ == "__main__":
     main()
