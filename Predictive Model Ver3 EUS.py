@@ -6,9 +6,13 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import warnings
-import os
-import glob
 warnings.filterwarnings('ignore')
+import os
+import requests
+import io
+import gzip
+import pickle
+import base64
 
 from scipy import stats
 from sklearn.linear_model import LinearRegression
@@ -37,84 +41,302 @@ st.markdown("""
 """)
 
 # ============================================================================
-# AUTO-LOAD CSV FILES FUNCTION
+# DATA LOADING CONFIGURATION
 # ============================================================================
 
-def load_csv_files_from_repo():
-    """Automatically load CSV files from the repository root directory"""
+# Option 1: Microsoft OneDrive Share Links
+# Replace these with your actual OneDrive share links
+ONEDRIVE_FILES = {
+    "2023 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2023%20Database.csv?d=we657154067c940328761d938dedbc3be&csf=1&web=1&e=BE3VaU",  # Replace with actual share link
+    "2024 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2024%20Database.csv?d=w278f821dc65c482b98eea62c052938e1&csf=1&web=1&e=izcx4M",   # Replace with actual share link
+    "2025 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2025%20Database.csv?d=w47f555cd3ddb4db59156f788b2cbf512&csf=1&web=1&e=2Qg2xB"   # Replace with actual share link
+}
+
+# Option 2: Direct URL downloads (Dropbox, GitHub Releases, etc.)
+DIRECT_DOWNLOAD_URLS = {
+     #"2023 Database.csv": "https://www.dropbox.com/s/xxxxx/2023_Database.csv?dl=1",
+     #"2024 Database.csv": "https://github.com/yourusername/yourrepo/releases/download/v1.0/2024_Database.csv"
+}
+
+# Option 3: Compressed pickle files in repository
+COMPRESSED_DATA_PATH = "compressed_data"
+
+# ============================================================================
+# DATA LOADING FUNCTIONS
+# ============================================================================
+
+def convert_onedrive_link_to_download(share_link):
+    """Convert OneDrive share link to direct download link"""
+    import base64
     
-    # Look for CSV files in the root directory (current working directory)
-    csv_files = glob.glob("*.csv")
+    # OneDrive share links can be in different formats
+    # Format 1: https://1drv.ms/x/s!...
+    # Format 2: https://onedrive.live.com/...
     
-    # Filter for files that start with a year (like "2022 Database.csv")
-    year_csv_files = []
-    for file_path in csv_files:
-        filename = os.path.basename(file_path)
-        # Check if filename starts with 4 digits (year)
-        if len(filename) >= 4 and filename[:4].isdigit():
-            year_csv_files.append(file_path)
-    
-    if year_csv_files:
-        st.success(f"✅ Found {len(year_csv_files)} CSV files in repository")
+    try:
+        # Method 1: Using the embed URL transformation
+        # This works for most OneDrive share links
+        if "1drv.ms" in share_link or "onedrive.live.com" in share_link:
+            # Encode the URL to base64
+            encoded_url = base64.b64encode(share_link.encode()).decode()
+            # Remove padding
+            encoded_url = encoded_url.rstrip('=')
+            # Replace characters for URL safety
+            encoded_url = encoded_url.replace('/', '_').replace('+', '-')
+            # Create download URL
+            download_url = f"https://api.onedrive.com/v1.0/shares/u!{encoded_url}/root/content"
+            return download_url
+        else:
+            # If it's already a direct download URL, return as is
+            return share_link
+    except Exception as e:
+        st.error(f"Error converting OneDrive link: {str(e)}")
+        return share_link
+
+def download_from_onedrive(share_link):
+    """Download file from OneDrive using share link"""
+    try:
+        # Convert share link to download URL
+        download_url = convert_onedrive_link_to_download(share_link)
         
-        # Display which files were found
-        with st.expander("📋 Available Data Files"):
-            for file_path in year_csv_files:
-                file_name = os.path.basename(file_path)
-                try:
-                    file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
-                    st.write(f"• **{file_name}** ({file_size:.1f} MB)")
-                except:
-                    st.write(f"• **{file_name}**")
-    else:
-        st.warning("⚠️ No CSV files found in repository root")
-        st.info("Please upload CSV files with names starting with the year (e.g., '2022 Database.csv')")
+        # Download the file
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(download_url, headers=headers, timeout=300)
+        
+        if response.status_code == 200:
+            return response.content
+        else:
+            st.error(f"Error downloading from OneDrive: HTTP {response.status_code}")
+            # Try alternative method
+            if "1drv.ms" in share_link:
+                # Try with download=1 parameter
+                alt_url = share_link + "?download=1"
+                response = requests.get(alt_url, headers=headers, timeout=300)
+                if response.status_code == 200:
+                    return response.content
+            return None
+            
+    except Exception as e:
+        st.error(f"Error downloading from OneDrive: {str(e)}")
         return None
-    
-    return year_csv_files
 
-class FileWrapper:
-    """Wrapper to make local file paths work with existing processing logic"""
-    def __init__(self, file_path):
-        self.file_path = file_path
-        self.name = os.path.basename(file_path)
-    
-    def read(self):
-        with open(self.file_path, 'rb') as f:
-            return f.read()
+def download_from_url(url):
+    """Download file from direct URL"""
+    try:
+        response = requests.get(url, timeout=300)  # 5 minute timeout for large files
+        if response.status_code == 200:
+            return response.content
+        else:
+            st.error(f"Error downloading file: HTTP {response.status_code}")
+            return None
+    except Exception as e:
+        st.error(f"Error downloading from URL: {str(e)}")
+        return None
 
-def get_available_files():
-    """Get available files - either from repository or allow upload"""
+@st.cache_data(show_spinner=False, ttl=3600)  # Cache for 1 hour
+def load_cloud_data():
+    """Load data from cloud storage (OneDrive, Dropbox, etc.)"""
+    data_files = []
     
-    # Try to load files from repository first
-    repo_files = load_csv_files_from_repo()
+    # Try OneDrive files first
+    if ONEDRIVE_FILES and any(link != "YOUR_ONEDRIVE_SHARE_LINK_HERE" for link in ONEDRIVE_FILES.values()):
+        for filename, share_link in ONEDRIVE_FILES.items():
+            if share_link != "YOUR_ONEDRIVE_SHARE_LINK_HERE":
+                st.info(f"Downloading {filename} from OneDrive...")
+                content = download_from_onedrive(share_link)
+                if content:
+                    data_files.append({
+                        'name': filename,
+                        'data': content
+                    })
     
-    if repo_files:
-        # Convert file paths to FileWrapper objects for compatibility
-        file_objects = [FileWrapper(file_path) for file_path in repo_files]
-        return file_objects, "repository"
-    else:
-        # Fallback to file upload if no repo files found
-        st.warning("🔄 Repository files not found. Please upload files manually:")
-        uploaded_files = st.file_uploader(
-            "Upload Historical Database CSV Files",
-            accept_multiple_files=True,
-            type="csv",
-            help="Upload 2+ years of historical data with booking_created_date column"
+    # Try direct URLs
+    elif DIRECT_DOWNLOAD_URLS:
+        for filename, url in DIRECT_DOWNLOAD_URLS.items():
+            st.info(f"Downloading {filename}...")
+            content = download_from_url(url)
+            if content:
+                data_files.append({
+                    'name': filename,
+                    'data': content
+                })
+    
+    return data_files
+
+@st.cache_data(show_spinner=False)
+def load_compressed_data():
+    """Load pre-processed compressed data from repository"""
+    try:
+        # Check if compressed data directory exists
+        if os.path.exists(COMPRESSED_DATA_PATH):
+            compressed_files = [f for f in os.listdir(COMPRESSED_DATA_PATH) if f.endswith('.pkl.gz')]
+            
+            if compressed_files:
+                data = {}
+                for file in compressed_files:
+                    file_path = os.path.join(COMPRESSED_DATA_PATH, file)
+                    with gzip.open(file_path, 'rb') as f:
+                        year = int(file.split('_')[0])
+                        data[year] = pickle.load(f)
+                
+                return data
+    except Exception as e:
+        st.error(f"Error loading compressed data: {str(e)}")
+    
+    return None
+
+def save_compressed_data(processed_years, output_dir="compressed_data"):
+    """Save processed data as compressed pickle files (for local preprocessing)"""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for year, data in processed_years.items():
+        output_file = os.path.join(output_dir, f"{year}_processed.pkl.gz")
+        with gzip.open(output_file, 'wb') as f:
+            pickle.dump(data, f)
+        print(f"Saved {output_file}")
+
+# ============================================================================
+# STREAMLIT SECRETS CONFIGURATION
+# ============================================================================
+
+def load_from_secrets():
+    """Load configuration from Streamlit secrets"""
+    data_files = []
+    
+    # Check if secrets are configured
+    if hasattr(st, 'secrets') and 'data_sources' in st.secrets:
+        sources = st.secrets['data_sources']
+        
+        # OneDrive files
+        if 'onedrive' in sources:
+            for filename, share_link in sources['onedrive'].items():
+                st.info(f"Downloading {filename} from OneDrive...")
+                content = download_from_onedrive(share_link)
+                if content:
+                    data_files.append({
+                        'name': filename,
+                        'data': content
+                    })
+        
+        # Direct URLs
+        elif 'urls' in sources:
+            for filename, url in sources['urls'].items():
+                st.info(f"Downloading {filename}...")
+                content = download_from_url(url)
+                if content:
+                    data_files.append({
+                        'name': filename,
+                        'data': content
+                    })
+    
+    return data_files
+
+# ============================================================================
+# DATA PROCESSING (keeping all original functions)
+# ============================================================================
+
+@st.cache_data(show_spinner=False)
+def process_data_files(data_files):
+    """Process data files (either default or uploaded)"""
+    yearly_data = {}
+    has_prebooking_data = False
+    
+    for file_info in data_files:
+        try:
+            # Extract year from filename
+            file_name = file_info['name'] if isinstance(file_info, dict) else file_info.name
+            year = int(file_name.split()[0])
+            
+            # Read CSV data
+            if isinstance(file_info, dict):
+                # Default data (bytes)
+                df = pd.read_csv(io.BytesIO(file_info['data']), low_memory=False)
+            else:
+                # Uploaded file
+                df = pd.read_csv(file_info, low_memory=False)
+            
+            # Filter for Euston
+            df_euston = df[df['station_code'] == "EUS"].copy()
+            
+            # Check if prebooking data is available
+            if 'booking_created_date' in df_euston.columns:
+                has_prebooking_data = True
+            
+            if len(df_euston) > 0:
+                yearly_data[year] = df_euston
+                
+        except Exception as e:
+            st.error(f"Error processing {file_name}: {str(e)}")
+            continue
+    
+    if not yearly_data:
+        return None, None, None
+    
+    # Process each year
+    processed_years = {}
+    
+    for year, df in yearly_data.items():
+        # Convert dates
+        df['scheduled_departure_date'] = pd.to_datetime(
+            df['scheduled_departure_date'], 
+            dayfirst=True,
+            errors='coerce'
         )
         
-        if uploaded_files:
-            st.success(f"✅ {len(uploaded_files)} files uploaded")
-            return uploaded_files, "upload"
-        else:
-            return None, None
+        # Convert booking_created_date if present
+        if 'booking_created_date' in df.columns:
+            df['booking_created_date'] = pd.to_datetime(
+                df['booking_created_date'],
+                dayfirst=True,
+                errors='coerce'
+            )
+        
+        df = df.dropna(subset=['scheduled_departure_date'])
+        
+        # Create daily bookings
+        daily_bookings = df.groupby('scheduled_departure_date').size().reset_index(name='bookings')
+        
+        # Full year date range
+        year_start = pd.Timestamp(f'{year}-01-01')
+        year_end = pd.Timestamp(f'{year}-12-31')
+        
+        # Handle partial years
+        if daily_bookings['scheduled_departure_date'].min() > year_start:
+            year_start = daily_bookings['scheduled_departure_date'].min()
+        if daily_bookings['scheduled_departure_date'].max() < year_end:
+            year_end = daily_bookings['scheduled_departure_date'].max()
+        
+        full_dates = pd.date_range(start=year_start, end=year_end, freq='D')
+        full_dates_df = pd.DataFrame({'scheduled_departure_date': full_dates})
+        
+        yearly_bookings = full_dates_df.merge(daily_bookings, on='scheduled_departure_date', how='left')
+        yearly_bookings['bookings'] = yearly_bookings['bookings'].fillna(0)
+        yearly_bookings['year'] = year
+        yearly_bookings['day_of_year'] = yearly_bookings['scheduled_departure_date'].dt.dayofyear
+        yearly_bookings['day_of_week'] = yearly_bookings['scheduled_departure_date'].dt.dayofweek
+        yearly_bookings['month'] = yearly_bookings['scheduled_departure_date'].dt.month
+        yearly_bookings['week_of_year'] = yearly_bookings['scheduled_departure_date'].dt.isocalendar().week
+        
+        processed_years[year] = yearly_bookings
+    
+    # Combine all raw data if prebooking analysis needed
+    all_raw_data = None
+    if has_prebooking_data:
+        all_raw_data = pd.concat([yearly_data[year] for year in yearly_data.keys()])
+    
+    return processed_years, all_raw_data, has_prebooking_data
+
+# [Include all the original classes and functions here - PrebookingAnalyzer, AssistedTravelHolidayPatterns, etc.]
+# [I'm not repeating them to save space, but they should all be included]
 
 # ============================================================================
-# PREBOOKING ANALYZER CLASS (same as before)
+# PREBOOKING ANALYZER CLASS
 # ============================================================================
 
 class PrebookingAnalyzer:
-    """Analyzes relationship between prebookings and final demand"""
+    """Analyses relationship between prebookings and final demand"""
     
     def __init__(self):
         self.prebooking_models = {}  # Store models by day of week
@@ -122,10 +344,7 @@ class PrebookingAnalyzer:
         self.day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
     
     def analyze_prebooking_patterns(self, historical_data):
-        """Analyze prebooking patterns from historical data"""
-        
-        # First, create prebooking profiles
-        st.write("🔍 Analyzing prebooking patterns...")
+        """Analyse prebooking patterns from historical data"""
         
         # For each booking, calculate days in advance
         historical_data['days_in_advance'] = (
@@ -249,7 +468,7 @@ class PrebookingAnalyzer:
         return adjustment_ratio, explanation, analysis
 
 # ============================================================================
-# HOLIDAY PATTERN CLASS (same as before)
+# HOLIDAY PATTERN CLASS (from original)
 # ============================================================================
 
 class AssistedTravelHolidayPatterns:
@@ -395,213 +614,25 @@ class AssistedTravelHolidayPatterns:
             return {-2: 1.2, -1: 1.25, 0: 1.1, 1: 1.25, 2: 1.2}
 
 # ============================================================================
-# SIDEBAR WITH PREBOOKING INPUTS (Modified)
+# MODEL TRAINING AND PREDICTION FUNCTIONS
 # ============================================================================
 
-# Sidebar
-with st.sidebar:
-    st.header("📁 Data Source")
-    
-    # Get available files
-    available_files, source_type = get_available_files()
-    
-    if available_files and source_type == "repository":
-        st.info("🔄 Using CSV files from repository")
-        # Show refresh button
-        if st.button("🔄 Refresh Data"):
-            st.rerun()
-    elif available_files and source_type == "upload":
-        st.info("📤 Using uploaded files")
-    
-    st.header("📅 Prediction Period")
-    
-    # Date selection
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input(
-            "Start Date",
-            value=datetime.now().date() + timedelta(days=1),
-            min_value=datetime.now().date(),
-            help="Select the first day of your 7-day forecast"
-        )
-    
-    with col2:
-        # Automatically set end date to 6 days after start
-        end_date = start_date + timedelta(days=6)
-        st.date_input(
-            "End Date",
-            value=end_date,
-            disabled=True,
-            help="Automatically set to 7 days"
-        )
-    
-    st.info(f"📊 Forecasting {start_date.strftime('%a %d %b')} to {end_date.strftime('%a %d %b %Y')}")
-    
-    # Check if forecast is within next 7 days
-    days_until_start = (start_date - datetime.now().date()).days
-    enable_prebooking = days_until_start >= 0 and days_until_start <= 7
-    
-    # Prebooking inputs section
-    st.header("📋 Current Prebookings")
-    
-    if enable_prebooking:
-        st.markdown("*Enter current prebooking numbers (optional)*")
-        
-        prebooking_inputs = {}
-        for i in range(7):
-            date = start_date + timedelta(days=i)
-            days_until = (date - datetime.now().date()).days
-            
-            if days_until > 0:
-                prebooking_inputs[date] = st.number_input(
-                    f"{date.strftime('%a %d/%m')} ({days_until}d away)",
-                    min_value=0,
-                    value=0,
-                    help=f"Current prebookings for {date.strftime('%A')}"
-                )
-        
-        use_prebooking = st.checkbox(
-            "Apply Prebooking Analysis",
-            value=True,
-            help="Use prebooking patterns to refine predictions"
-        )
-    else:
-        st.warning("Prebooking analysis only available for predictions within next 7 days")
-        prebooking_inputs = {}
-        use_prebooking = False
-    
-    st.header("⚙️ Model Settings")
-    
-    confidence_level = st.slider(
-        "Confidence Interval (%)",
-        80, 99, 95,
-        help="Confidence level for prediction intervals"
-    )
-    
-    apply_holidays = st.checkbox(
-        "Apply UK Holiday Patterns",
-        value=True,
-        help="Apply assisted travel holiday behavior"
-    )
-    
-    show_components = st.checkbox(
-        "Show Prediction Components",
-        value=True,
-        help="Break down how each prediction is calculated"
-    )
-    
-    st.header("🎯 Operational Thresholds")
-    
-    low_threshold = st.number_input(
-        "Low Demand Threshold",
-        min_value=0,
-        value=150,
-        help="Below this = low staffing needed"
-    )
-    
-    high_threshold = st.number_input(
-        "High Demand Threshold", 
-        min_value=0,
-        value=300,
-        help="Above this = full staffing needed"
-    )
+@st.cache_resource(show_spinner=False)
+def train_cached_model(processed_years):
+    """Train and cache the prediction model"""
+    return train_prediction_model(processed_years)
 
-# ============================================================================
-# MODIFIED DATA PROCESSING FUNCTIONS
-# ============================================================================
-
-def process_historical_data(files, source_type):
-    """Process historical data for training - handles both repo files and uploads"""
-    if not files:
-        return None, None
-    
-    yearly_data = {}
-    has_prebooking_data = False
-    
-    for file in files:
-        try:
-            # Extract year from filename
-            year = int(file.name.split()[0])
-            
-            # Read CSV based on source type
-            if source_type == "repository":
-                df = pd.read_csv(file.file_path, low_memory=False)
-            else:  # uploaded file
-                df = pd.read_csv(file, low_memory=False)
-            
-            # Filter for Euston
-            df_euston = df[df['station_code'] == "EUS"].copy()
-            
-            # Check if prebooking data is available
-            if 'booking_created_date' in df_euston.columns:
-                has_prebooking_data = True
-            
-            if len(df_euston) > 0:
-                yearly_data[year] = df_euston
-                
-        except Exception as e:
-            st.error(f"Error processing {file.name}: {str(e)}")
-            continue
-    
-    if not yearly_data:
-        return None, None
-    
-    # Process each year (rest of the function remains the same)
-    processed_years = {}
-    
-    for year, df in yearly_data.items():
-        # Convert dates
-        df['scheduled_departure_date'] = pd.to_datetime(
-            df['scheduled_departure_date'], 
-            dayfirst=True,
-            errors='coerce'
-        )
-        
-        # Convert booking_created_date if present
-        if 'booking_created_date' in df.columns:
-            df['booking_created_date'] = pd.to_datetime(
-                df['booking_created_date'],
-                dayfirst=True,
-                errors='coerce'
-            )
-        
-        df = df.dropna(subset=['scheduled_departure_date'])
-        
-        # Create daily bookings
-        daily_bookings = df.groupby('scheduled_departure_date').size().reset_index(name='bookings')
-        
-        # Full year date range
-        year_start = pd.Timestamp(f'{year}-01-01')
-        year_end = pd.Timestamp(f'{year}-12-31')
-        
-        # Handle partial years
-        if daily_bookings['scheduled_departure_date'].min() > year_start:
-            year_start = daily_bookings['scheduled_departure_date'].min()
-        if daily_bookings['scheduled_departure_date'].max() < year_end:
-            year_end = daily_bookings['scheduled_departure_date'].max()
-        
-        full_dates = pd.date_range(start=year_start, end=year_end, freq='D')
-        full_dates_df = pd.DataFrame({'scheduled_departure_date': full_dates})
-        
-        yearly_bookings = full_dates_df.merge(daily_bookings, on='scheduled_departure_date', how='left')
-        yearly_bookings['bookings'] = yearly_bookings['bookings'].fillna(0)
-        yearly_bookings['year'] = year
-        yearly_bookings['day_of_year'] = yearly_bookings['scheduled_departure_date'].dt.dayofyear
-        yearly_bookings['day_of_week'] = yearly_bookings['scheduled_departure_date'].dt.dayofweek
-        yearly_bookings['month'] = yearly_bookings['scheduled_departure_date'].dt.month
-        yearly_bookings['week_of_year'] = yearly_bookings['scheduled_departure_date'].dt.isocalendar().week
-        
-        processed_years[year] = yearly_bookings
-    
-    # Combine all raw data if prebooking analysis needed
-    if has_prebooking_data:
-        all_raw_data = pd.concat([yearly_data[year] for year in yearly_data.keys()])
-        return processed_years, all_raw_data
-    
-    return processed_years, None
+@st.cache_resource(show_spinner=False)
+def analyze_cached_prebookings(raw_data):
+    """Analyze and cache prebooking patterns"""
+    if raw_data is not None and 'booking_created_date' in raw_data.columns:
+        analyzer = PrebookingAnalyzer()
+        analyzer.analyze_prebooking_patterns(raw_data)
+        return analyzer
+    return None
 
 def train_prediction_model(processed_years):
-    """Train the base model on all historical data (same as before)"""
+    """Train the base model on all historical data"""
     
     # Combine all historical data
     all_historical = pd.concat(processed_years.values())
@@ -681,7 +712,7 @@ def train_prediction_model(processed_years):
 def predict_future_demand_with_prebooking(model, prebooking_analyzer, start_date, 
                                          prebooking_inputs=None, apply_holidays=True, 
                                          confidence_level=95, use_prebooking=False):
-    """Generate predictions with optional prebooking adjustments (same as before)"""
+    """Generate predictions with optional prebooking adjustments"""
     
     # Initialize holiday patterns
     holiday_model = AssistedTravelHolidayPatterns() if apply_holidays else None
@@ -788,52 +819,275 @@ def categorize_demand(value, low_threshold, high_threshold):
         return "High", "🔴"
 
 # ============================================================================
-# MAIN APPLICATION (Modified)
+# LOAD DATA ON STARTUP
+# ============================================================================
+
+# Initialize session state for data
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+    st.session_state.processed_years = None
+    st.session_state.raw_data = None
+    st.session_state.has_prebooking_data = False
+    st.session_state.model = None
+    st.session_state.prebooking_analyzer = None
+    st.session_state.use_uploaded_data = False
+    st.session_state.data_source = None
+
+# Load data on startup
+if not st.session_state.data_loaded and not st.session_state.use_uploaded_data:
+    with st.spinner("Loading historical data..."):
+        
+        # Try different data sources in order
+        data_loaded = False
+        
+        # 1. Try Streamlit secrets first
+        if not data_loaded:
+            try:
+                data_files = load_from_secrets()
+                if data_files:
+                    st.session_state.data_source = "Streamlit Secrets"
+                    data_loaded = True
+            except:
+                pass
+        
+        # 2. Try compressed data
+        if not data_loaded:
+            compressed_data = load_compressed_data()
+            if compressed_data:
+                st.session_state.processed_years = compressed_data
+                st.session_state.data_loaded = True
+                st.session_state.data_source = "Compressed Files"
+                st.session_state.has_prebooking_data = False  # Compressed data doesn't include raw data
+                
+                # Train model
+                st.session_state.model = train_cached_model(compressed_data)
+                st.success(f"✅ Loaded pre-processed data from {len(compressed_data)} years")
+                data_loaded = True
+        
+        # 3. Try cloud storage
+        if not data_loaded:
+            data_files = load_cloud_data()
+            if data_files:
+                st.session_state.data_source = "Cloud Storage"
+                data_loaded = True
+        
+        # Process data files if loaded
+        if data_loaded and not st.session_state.data_loaded and data_files:
+            processed_years, raw_data, has_prebooking_data = process_data_files(data_files)
+            
+            if processed_years and len(processed_years) >= 2:
+                st.session_state.processed_years = processed_years
+                st.session_state.raw_data = raw_data
+                st.session_state.has_prebooking_data = has_prebooking_data
+                st.session_state.data_loaded = True
+                
+                # Train model
+                st.session_state.model = train_cached_model(processed_years)
+                
+                # Analyze prebookings if available
+                if raw_data is not None and has_prebooking_data:
+                    st.session_state.prebooking_analyzer = analyze_cached_prebookings(raw_data)
+                
+                st.success(f"✅ Loaded {len(processed_years)} years of data from {st.session_state.data_source}")
+            else:
+                st.warning("Data files not found. Please configure data source or upload manually.")
+
+# ============================================================================
+# SIDEBAR (rest of the code remains the same)
+# ============================================================================
+
+with st.sidebar:
+    st.header("📁 Data Source")
+    
+    if st.session_state.data_source:
+        st.info(f"Using: {st.session_state.data_source}")
+    
+    # Option to use uploaded data instead
+    use_custom_data = st.checkbox(
+        "Upload Custom Data", 
+        value=st.session_state.use_uploaded_data,
+        help="Upload your own data files instead of using pre-loaded data"
+    )
+    
+    if use_custom_data:
+        st.session_state.use_uploaded_data = True
+        uploaded_files = st.file_uploader(
+            "Upload Historical Database CSV Files",
+            accept_multiple_files=True,
+            type="csv",
+            help="Upload 2+ years of historical data with booking_created_date column"
+        )
+        
+        if uploaded_files and st.button("Process Uploaded Data"):
+            with st.spinner("Processing uploaded data..."):
+                processed_years, raw_data, has_prebooking_data = process_data_files(uploaded_files)
+                
+                if processed_years and len(processed_years) >= 2:
+                    st.session_state.processed_years = processed_years
+                    st.session_state.raw_data = raw_data
+                    st.session_state.has_prebooking_data = has_prebooking_data
+                    st.session_state.data_loaded = True
+                    st.session_state.data_source = "Uploaded Files"
+                    
+                    # Clear cached models to retrain
+                    st.cache_resource.clear()
+                    
+                    # Train model
+                    st.session_state.model = train_cached_model(processed_years)
+                    
+                    # Analyze prebookings if available
+                    if raw_data is not None and has_prebooking_data:
+                        st.session_state.prebooking_analyzer = analyze_cached_prebookings(raw_data)
+                    
+                    st.success(f"✅ Processed {len(uploaded_files)} files successfully")
+                else:
+                    st.error("Need at least 2 years of historical data")
+    else:
+        st.session_state.use_uploaded_data = False
+    
+    # Add configuration help
+    with st.expander("🔧 Configure Data Source"):
+        st.markdown("""
+        **Option 1: Microsoft OneDrive**
+        1. Upload files to OneDrive
+        2. Right-click → Share → Copy link
+        3. Update ONEDRIVE_FILES in code with share links
+        
+        **Option 2: Streamlit Secrets**
+        1. Go to app settings
+        2. Add secrets in TOML format:
+        ```toml
+        [data_sources.onedrive]
+        "2023 Database.csv" = "https://1drv.ms/..."
+        "2024 Database.csv" = "https://1drv.ms/..."
+        ```
+        
+        **Option 3: Compressed Data**
+        1. Run preprocessing locally
+        2. Upload compressed .pkl.gz files
+        3. Place in /compressed_data folder
+        """)
+    
+    st.header("📅 Prediction Period")
+    
+    # Date selection
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "Start Date",
+            value=datetime.now().date() + timedelta(days=1),
+            min_value=datetime.now().date(),
+            help="Select the first day of your 7-day forecast"
+        )
+    
+    with col2:
+        # Automatically set end date to 6 days after start
+        end_date = start_date + timedelta(days=6)
+        st.date_input(
+            "End Date",
+            value=end_date,
+            disabled=True,
+            help="Automatically set to 7 days"
+        )
+    
+    st.info(f"📊 Forecasting {start_date.strftime('%a %d %b')} to {end_date.strftime('%a %d %b %Y')}")
+    
+    # Check if forecast is within next 7 days
+    days_until_start = (start_date - datetime.now().date()).days
+    enable_prebooking = days_until_start >= 0 and days_until_start <= 7
+    
+    # Prebooking inputs section
+    st.header("📋 Current Prebookings")
+    
+    if enable_prebooking and st.session_state.has_prebooking_data:
+        st.markdown("*Enter current prebooking numbers (optional)*")
+        
+        prebooking_inputs = {}
+        for i in range(7):
+            date = start_date + timedelta(days=i)
+            days_until = (date - datetime.now().date()).days
+            
+            if days_until > 0:
+                prebooking_inputs[date] = st.number_input(
+                    f"{date.strftime('%a %d/%m')} ({days_until}d away)",
+                    min_value=0,
+                    value=0,
+                    help=f"Current prebookings for {date.strftime('%A')}"
+                )
+        
+        use_prebooking = st.checkbox(
+            "Apply Prebooking Analysis",
+            value=True,
+            help="Use prebooking patterns to refine predictions"
+        )
+    else:
+        if not st.session_state.has_prebooking_data:
+            st.warning("Prebooking analysis not available (no booking_created_date in data)")
+        else:
+            st.warning("Prebooking analysis only available for predictions within next 7 days")
+        prebooking_inputs = {}
+        use_prebooking = False
+    
+    st.header("⚙️ Model Settings")
+    
+    confidence_level = st.slider(
+        "Confidence Interval (%)",
+        80, 99, 95,
+        help="Confidence level for prediction intervals"
+    )
+    
+    apply_holidays = st.checkbox(
+        "Apply UK Holiday Patterns",
+        value=True,
+        help="Apply assisted travel holiday behavior"
+    )
+    
+    show_components = st.checkbox(
+        "Show Prediction Components",
+        value=True,
+        help="Break down how each prediction is calculated"
+    )
+    
+    st.header("🎯 Operational Thresholds")
+    
+    low_threshold = st.number_input(
+        "Low Demand Threshold",
+        min_value=0,
+        value=150,
+        help="Below this = low staffing needed"
+    )
+    
+    high_threshold = st.number_input(
+        "High Demand Threshold", 
+        min_value=0,
+        value=300,
+        help="Above this = full staffing needed"
+    )
+
+# ============================================================================
+# MAIN APPLICATION (same as before)
 # ============================================================================
 
 def main():
     try:
-        if available_files:
-            # Process historical data
-            with st.spinner("Processing historical data..."):
-                processed_years, raw_data = process_historical_data(available_files, source_type)
-                
-                if processed_years is None or len(processed_years) < 2:
-                    st.error("Need at least 2 years of historical data for reliable predictions")
-                    return
-            
-            # Train base model
-            with st.spinner("Training prediction model..."):
-                model = train_prediction_model(processed_years)
-            
-            # Initialize prebooking analyzer if data available
-            prebooking_analyzer = None
-            if raw_data is not None and 'booking_created_date' in raw_data.columns:
-                with st.spinner("Analyzing prebooking patterns..."):
-                    prebooking_analyzer = PrebookingAnalyzer()
-                    prebooking_analyzer.analyze_prebooking_patterns(raw_data)
-                    st.success("✅ Prebooking patterns analyzed")
-            else:
-                if use_prebooking:
-                    st.warning("⚠️ No booking_created_date column found - prebooking analysis unavailable")
-            
-            # Show model info
-            st.success(f"✅ Model trained on {len(model['years_trained'])} years of data ({min(model['years_trained'])}-{max(model['years_trained'])})")
-            
+        if st.session_state.data_loaded and st.session_state.model:
             # Generate predictions
             with st.spinner("Generating predictions..."):
                 predictions_df = predict_future_demand_with_prebooking(
-                    model, 
-                    prebooking_analyzer,
+                    st.session_state.model, 
+                    st.session_state.prebooking_analyzer,
                     start_date, 
                     prebooking_inputs=prebooking_inputs if use_prebooking else None,
                     apply_holidays=apply_holidays,
                     confidence_level=confidence_level,
-                    use_prebooking=use_prebooking and prebooking_analyzer is not None
+                    use_prebooking=use_prebooking and st.session_state.prebooking_analyzer is not None
                 )
             
-            # Display predictions (rest of visualization code remains the same)
+            # Display predictions
             st.header("📊 7-Day Demand Forecast")
+            
+            # Show model info
+            st.info(f"Model trained on {len(st.session_state.model['years_trained'])} years: {min(st.session_state.model['years_trained'])}-{max(st.session_state.model['years_trained'])}")
             
             # Summary metrics
             col1, col2, col3, col4 = st.columns(4)
@@ -925,39 +1179,194 @@ def main():
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Rest of the display code remains the same...
-            # (Prebooking Analysis Results, Detailed predictions table, etc.)
+            # Prebooking Analysis Results
+            if use_prebooking and any(predictions_df['prebooking_flag'].notna()):
+                st.header("📋 Prebooking Analysis Results")
+                
+                for _, row in predictions_df.iterrows():
+                    if row['prebooking_flag']:
+                        date_str = row['date'].strftime('%A %d %b')
+                        st.write(f"**{date_str}**: {row['prebooking_flag']}")
+                        
+                        if row['prebooking_analysis']:
+                            analysis = row['prebooking_analysis']
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Current Prebookings", 
+                                         f"{analysis['actual_prebookings']:.0f}")
+                            with col2:
+                                st.metric("Expected Prebookings", 
+                                         f"{analysis['expected_prebookings']:.0f}")
+                            with col3:
+                                st.metric("Implied Final Demand", 
+                                         f"{analysis['predicted_final_demand']:.0f}")
+            
+            # Detailed predictions table
+            st.header("📋 Detailed Daily Predictions")
+            
+            # Prepare display dataframe
+            display_df = predictions_df.copy()
+            
+            # Add demand category
+            display_df['Demand Level'] = display_df['final_prediction'].apply(
+                lambda x: categorize_demand(x, low_threshold, high_threshold)[1] + " " + 
+                         categorize_demand(x, low_threshold, high_threshold)[0]
+            )
+            
+            # Format columns
+            display_df['Date'] = display_df['date'].dt.strftime('%a %d %b')
+            display_df['Base Prediction'] = display_df['base_prediction'].apply(lambda x: f"{x:,.0f}")
+            display_df['Final Prediction'] = display_df['final_prediction'].apply(lambda x: f"{x:,.0f}")
+            display_df['Range'] = display_df.apply(
+                lambda x: f"{x['lower_bound']:,.0f} - {x['upper_bound']:,.0f}", axis=1
+            )
+            display_df['Holiday'] = display_df['holiday_name'].fillna('-')
+            display_df['Prebooking Adj'] = display_df.apply(
+                lambda x: f"{x['prebooking_adjustment']:.2f}x" if x['prebooking_adjustment'] != 1.0 else "-", 
+                axis=1
+            )
+            
+            # Select columns to display
+            display_columns = ['Date', 'Base Prediction', 'Final Prediction', 'Range', 
+                              'Demand Level', 'Holiday', 'Prebooking Adj']
+            
+            st.dataframe(
+                display_df[display_columns],
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Component breakdown
+            if show_components:
+                st.header("🔧 Prediction Components Breakdown")
+                
+                components_df = predictions_df[[
+                    'date', 'base_value', 'dow_factor', 'month_factor', 
+                    'holiday_factor', 'growth_factor', 'prebooking_adjustment', 'final_prediction'
+                ]].copy()
+                
+                components_df['Date'] = components_df['date'].dt.strftime('%a %d %b')
+                components_df = components_df.drop('date', axis=1)
+                
+                # Rename columns
+                components_df.columns = [
+                    'Date', 'Seasonal Base', 'Day of Week', 'Monthly', 
+                    'Holiday', 'Growth', 'Prebooking', 'Final Prediction'
+                ]
+                
+                st.dataframe(
+                    components_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Explanation
+                with st.expander("📖 Understanding the Components"):
+                    st.markdown("""
+                    **How predictions are calculated:**
+                    
+                    1. **Seasonal Base**: Historical median demand for this day of year
+                    2. **Day of Week**: Multiplier based on weekday patterns (Tue-Thu typically higher)
+                    3. **Monthly**: Seasonal adjustment by month
+                    4. **Holiday**: UK bank holiday effects (bookend pattern for assisted travel)
+                    5. **Growth**: Year-over-year growth projection
+                    6. **Prebooking**: Adjustment based on current booking levels
+                    7. **Final = Base × DoW × Monthly × Holiday × Growth × Prebooking**
+                    
+                    **Prebooking Logic:**
+                    - If prebookings indicate **lower** demand → Flag only (no adjustment)
+                    - If prebookings indicate **higher** demand:
+                      - Within confidence interval → Update prediction
+                      - Outside confidence interval → Flag only
+                    """)
+            
+            # Operational recommendations
+            st.header("🎯 Operational Recommendations")
+            
+            high_days = predictions_df[predictions_df['final_prediction'] > high_threshold]
+            low_days = predictions_df[predictions_df['final_prediction'] < low_threshold]
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("⚠️ High Demand Days")
+                if not high_days.empty:
+                    for _, day in high_days.iterrows():
+                        st.warning(f"**{day['date'].strftime('%A %d %b')}**: {day['final_prediction']:,.0f} bookings expected")
+                    st.info("💡 Ensure full staffing and additional resources")
+                else:
+                    st.success("No days exceed high threshold")
+            
+            with col2:
+                st.subheader("✅ Low Demand Days")
+                if not low_days.empty:
+                    for _, day in low_days.iterrows():
+                        st.info(f"**{day['date'].strftime('%A %d %b')}**: {day['final_prediction']:,.0f} bookings expected")
+                    st.success("💡 Opportunity for training or maintenance")
+                else:
+                    st.info("No days below low threshold")
+            
+            # Export functionality
+            st.header("📥 Export Predictions")
+            
+            # Prepare export data
+            export_df = predictions_df[[
+                'date', 'base_prediction', 'final_prediction', 'lower_bound', 
+                'upper_bound', 'holiday_name', 'prebooking_flag'
+            ]].copy()
+            export_df['date'] = export_df['date'].dt.strftime('%Y-%m-%d')
+            export_df.columns = ['Date', 'Base_Prediction', 'Final_Prediction', 
+                                'Lower_Bound', 'Upper_Bound', 'Holiday', 'Prebooking_Note']
+            
+            csv = export_df.to_csv(index=False)
+            
+            st.download_button(
+                label="Download Predictions as CSV",
+                data=csv,
+                file_name=f"integrated_forecast_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
             
         else:
-            st.info("📊 No data available. Please check repository setup or upload files manually.")
+            st.info("👆 Configuring data source...")
             
-            with st.expander("📚 Repository Setup Instructions"):
+            with st.expander("📚 Setup Instructions"):
                 st.markdown("""
-                **To use automatic data loading:**
+                ## Choose Your Data Storage Solution:
                 
-                1. **Upload your CSV files** directly to the repository root directory
-                2. **File naming**: Files should start with the year (e.g., "2022 Database.csv")
-                3. **Repository structure**:
+                ### Option 1: Microsoft OneDrive (Recommended)
+                1. Upload your CSV files to OneDrive
+                2. Right-click each file → "Share" → "Copy link"
+                3. Make sure link settings allow "Anyone with the link can view"
+                4. Use Streamlit Secrets to store share links:
+                   ```toml
+                   [data_sources.onedrive]
+                   "2023 Database.csv" = "https://1drv.ms/x/s!AbCdEfGhIjKlMnOpQrStUvWxYz"
+                   "2024 Database.csv" = "https://1drv.ms/x/s!BcDeFgHiJkLmNoPqRsTuVwXyZa"
                    ```
-                   your-repo/
-                   ├── Predictive model Ver3.py
-                   ├── requirements.txt
-                   ├── 2022 Database.csv
-                   ├── 2023 Database.csv
-                   └── 2024 Database.csv
+                
+                ### Option 2: Dropbox
+                1. Upload files to Dropbox
+                2. Get shareable links
+                3. Change `?dl=0` to `?dl=1` in the URL
+                4. Use Streamlit Secrets:
+                   ```toml
+                   [data_sources.urls]
+                   "2023 Database.csv" = "https://www.dropbox.com/s/xxx/file.csv?dl=1"
                    ```
-                4. **Push to GitHub** and the app will automatically load the data
                 
-                **CSV File Requirements:**
-                - Include `booking_created_date` column for prebooking analysis
-                - Include `station_code` column (filtered for "EUS")
-                - Include `scheduled_departure_date` column
+                ### Option 3: GitHub Releases (for files > 25MB)
+                1. Create a release in your GitHub repo
+                2. Upload CSV files as release assets
+                3. Use the direct download URLs
                 
-                **Upload Steps:**
-                1. Go to your GitHub repository
-                2. Click "Add file" → "Upload files"
-                3. Drag and drop your CSV files
-                4. Commit the changes
+                ### Option 4: Pre-processed Compressed Data
+                1. Run preprocessing script locally
+                2. Create compressed pickle files
+                3. Upload to `/compressed_data` folder (under 25MB each)
+                
+                ### Option 5: Manual Upload
+                - Check "Upload Custom Data" in the sidebar
                 """)
     
     except Exception as e:
@@ -965,6 +1374,37 @@ def main():
         with st.expander("🔍 Error Details"):
             import traceback
             st.code(traceback.format_exc())
+
+# Preprocessing script (save this separately as preprocess_data.py)
+"""
+# Run this script locally to create compressed data files
+import pandas as pd
+import gzip
+import pickle
+import os
+
+def preprocess_and_compress(csv_files_directory, output_directory="compressed_data"):
+    os.makedirs(output_directory, exist_ok=True)
+    
+    for filename in os.listdir(csv_files_directory):
+        if filename.endswith('.csv'):
+            year = int(filename.split()[0])
+            df = pd.read_csv(os.path.join(csv_files_directory, filename))
+            
+            # Process data (same as in main app)
+            df_euston = df[df['station_code'] == "EUS"].copy()
+            # ... rest of processing ...
+            
+            # Save compressed
+            output_file = os.path.join(output_directory, f"{year}_processed.pkl.gz")
+            with gzip.open(output_file, 'wb') as f:
+                pickle.dump(processed_data, f)
+            
+            print(f"Compressed {filename} to {os.path.getsize(output_file) / 1024 / 1024:.1f}MB")
+
+if __name__ == "__main__":
+    preprocess_and_compress("path/to/your/csv/files")
+"""
 
 if __name__ == "__main__":
     main()
