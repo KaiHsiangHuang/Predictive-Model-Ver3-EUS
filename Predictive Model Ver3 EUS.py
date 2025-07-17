@@ -7,11 +7,6 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
-import os
-import requests
-import io
-import gzip
-import pickle
 
 from scipy import stats
 from sklearn.linear_model import LinearRegression
@@ -24,6 +19,7 @@ try:
     HOLIDAYS_AVAILABLE = True
 except ImportError:
     HOLIDAYS_AVAILABLE = False
+    st.warning("holidays package not installed. Install with: pip install holidays")
 
 # Set page config
 st.set_page_config(
@@ -46,14 +42,17 @@ class PrebookingAnalyzer:
     """Analyses relationship between prebookings and final demand"""
     
     def __init__(self):
-        self.prebooking_models = {}
-        self.prebooking_stats = {}
+        self.prebooking_models = {}  # Store models by day of week
+        self.prebooking_stats = {}   # Store statistics
         self.day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
     
     def analyze_prebooking_patterns(self, historical_data):
         """Analyse prebooking patterns from historical data"""
         
-        # Calculate days in advance for each booking
+        # First, create prebooking profiles
+        st.write("🔍 Analysing prebooking patterns...")
+        
+        # For each booking, calculate days in advance
         historical_data['days_in_advance'] = (
             historical_data['scheduled_departure_date'] - 
             historical_data['booking_created_date']
@@ -73,9 +72,11 @@ class PrebookingAnalyzer:
                 historical_data['scheduled_departure_date'].dt.date == departure_date
             ]
             
+            # Skip if too few bookings
             if len(date_bookings) < 10:
                 continue
             
+            # Calculate cumulative bookings at each day before departure
             total_bookings = len(date_bookings)
             day_of_week = pd.to_datetime(departure_date).dayofweek
             
@@ -104,6 +105,7 @@ class PrebookingAnalyzer:
             if len(dow_data) < 10:
                 continue
             
+            # Calculate statistics for each days_before cutoff
             stats_by_days = {}
             
             for days_before in range(0, 8):
@@ -135,19 +137,23 @@ class PrebookingAnalyzer:
         if not stats or stats.get('sample_size', 0) < 10:
             return 1.0, "Insufficient historical data", None
         
+        # Expected prebookings based on base prediction and historical patterns
         expected_percentage = stats['mean_percentage']
         expected_prebookings = base_prediction * expected_percentage
         
+        # Calculate predicted final demand based on current prebookings
         if expected_percentage > 0:
             predicted_final_demand = current_prebookings / expected_percentage
         else:
             predicted_final_demand = base_prediction
         
+        # Calculate how much above/below the base prediction
         if base_prediction > 0:
             adjustment_ratio = predicted_final_demand / base_prediction
         else:
             adjustment_ratio = 1.0
         
+        # Prepare detailed analysis
         analysis = {
             'expected_prebookings': expected_prebookings,
             'actual_prebookings': current_prebookings,
@@ -157,6 +163,7 @@ class PrebookingAnalyzer:
             'adjustment_ratio': adjustment_ratio
         }
         
+        # Create explanation
         if adjustment_ratio > 1.0:
             explanation = f"Prebookings {current_prebookings:.0f} vs {expected_prebookings:.0f} expected → Predicting {predicted_final_demand:.0f} total"
         elif adjustment_ratio < 1.0:
@@ -167,36 +174,62 @@ class PrebookingAnalyzer:
         return adjustment_ratio, explanation, analysis
 
 # ============================================================================
-# HOLIDAY PATTERN CLASS
+# HOLIDAY PATTERN CLASS (from original)
 # ============================================================================
 
 class AssistedTravelHolidayPatterns:
     """Handles UK bank holiday patterns specific to assisted travel customers"""
     
     def __init__(self):
+        # Get base holidays from package if available
         current_year = datetime.now().year
         if HOLIDAYS_AVAILABLE:
             self.uk_holidays = holidays.UK(years=range(current_year-2, current_year+2))
         else:
+            # Manual fallback for key holidays
             self.uk_holidays = self._get_manual_holidays()
         
+        # Define patterns specific to assisted travel
         self.pattern_templates = {
             'easter': {
                 'good_friday': {
-                    -2: 1.3, -1: 1.35, 0: 1.3, 1: 0.85, 2: 0.8
+                    -2: 1.3,   # Thu before - outbound travel
+                    -1: 1.35,  # Day before (Thu) - peak outbound
+                    0: 1.3,    # Good Friday - still high
+                    1: 0.85,   # Saturday - low (middle of holiday)
+                    2: 0.8     # Easter Sunday - lowest
                 },
                 'easter_monday': {
-                    -2: 0.8, -1: 0.85, 0: 1.4, 1: 1.35, 2: 1.2
+                    -2: 0.8,   # Saturday - low
+                    -1: 0.85,  # Sunday - low
+                    0: 1.4,    # Easter Monday - return surge
+                    1: 1.35,   # Tuesday - continued returns
+                    2: 1.2     # Wednesday - normalizing
                 }
             },
-            'standard_monday': {
-                -3: 1.2, -2: 1.25, -1: 1.0, 0: 0.9, 1: 1.4, 2: 1.25
+            'standard_monday': {  # Most bank holidays are Mondays
+                -3: 1.2,   # Friday before - early outbound
+                -2: 1.25,  # Weekend before - moderate
+                -1: 1.0,   # Sunday - lower
+                0: 0.9,    # Monday holiday - lower
+                1: 1.4,    # Tuesday - return surge
+                2: 1.25    # Wednesday - still elevated
             },
             'christmas': {
-                -3: 1.35, -2: 1.4, -1: 1.45, 0: 0.7, 1: 0.8, 2: 1.1, 3: 1.2
+                -3: 1.35,  # Pre-Christmas travel
+                -2: 1.4,   # Peak pre-Christmas
+                -1: 1.45,  # Christmas Eve travel
+                0: 0.7,    # Christmas Day - minimal
+                1: 0.8,    # Boxing Day - low
+                2: 1.1,    # 27th - some returns
+                3: 1.2     # 28th - more returns
             },
             'new_year': {
-                -2: 1.2, -1: 1.25, 0: 0.8, 1: 1.1, 2: 1.3
+                -2: 1.2,   # 30th Dec - outbound
+                -1: 1.25,  # NYE - moderate
+                0: 0.8,    # New Year's Day - low
+                1: 1.1,    # 2nd Jan - returns begin
+                2: 1.3     # 3rd Jan - return surge
             }
         }
     
@@ -205,6 +238,7 @@ class AssistedTravelHolidayPatterns:
         current_year = datetime.now().year
         holidays_dict = {}
         
+        # Add holidays for current and next year
         for year in [current_year, current_year + 1]:
             holidays_dict.update({
                 pd.Timestamp(f'{year}-01-01'): "New Year's Day",
@@ -212,6 +246,7 @@ class AssistedTravelHolidayPatterns:
                 pd.Timestamp(f'{year}-12-26'): 'Boxing Day'
             })
             
+            # Add Easter (approximate - would need proper calculation)
             if year == 2025:
                 holidays_dict.update({
                     pd.Timestamp('2025-04-18'): 'Good Friday',
@@ -228,9 +263,11 @@ class AssistedTravelHolidayPatterns:
     def get_holiday_factor(self, check_date, base_prediction=None):
         """Get the appropriate multiplier for a given date"""
         
+        # Convert to pandas timestamp if needed
         if not isinstance(check_date, pd.Timestamp):
             check_date = pd.Timestamp(check_date)
         
+        # Check proximity to holidays
         best_factor = 1.0
         holiday_name = None
         
@@ -240,9 +277,11 @@ class AssistedTravelHolidayPatterns:
                 
             days_diff = (check_date - holiday_date).days
             
+            # Skip if too far from holiday
             if abs(days_diff) > 5:
                 continue
                 
+            # Get appropriate pattern
             pattern = self.get_pattern_for_holiday(name, holiday_date)
             
             if days_diff in pattern:
@@ -250,10 +289,11 @@ class AssistedTravelHolidayPatterns:
                 
                 # Adjust for day of week preferences
                 if check_date.weekday() in [5, 6]:  # Weekend
-                    factor *= 0.9
+                    factor *= 0.9  # Assisted travel avoids weekends
                 elif check_date.weekday() in [1, 2, 3]:  # Tue-Thu
-                    factor *= 1.05
+                    factor *= 1.05  # Slight boost for preferred days
                 
+                # Take the maximum factor if multiple holidays affect this date
                 if factor != 1.0 and abs(factor - 1.0) > abs(best_factor - 1.0):
                     best_factor = factor
                     holiday_name = name
@@ -276,71 +316,141 @@ class AssistedTravelHolidayPatterns:
         elif holiday_date.weekday() == 0:  # Monday holiday
             return self.pattern_templates['standard_monday']
         else:
+            # Default bank holiday pattern
             return {-2: 1.2, -1: 1.25, 0: 1.1, 1: 1.25, 2: 1.2}
 
 # ============================================================================
-# DATA LOADING AND PROCESSING
+# SIDEBAR WITH PREBOOKING INPUTS
 # ============================================================================
 
-def download_from_url(url):
-    """Download file from direct URL"""
-    try:
-        response = requests.get(url, timeout=300)
-        if response.status_code == 200:
-            return response.content
-        else:
-            st.error(f"Error downloading file: HTTP {response.status_code}")
-            return None
-    except Exception as e:
-        st.error(f"Error downloading: {str(e)}")
-        return None
-
-@st.cache_data(show_spinner=False)
-def load_and_process_data():
-    """Load and process data from configured sources"""
+# Sidebar
+with st.sidebar:
+    st.header("📁 Historical Data")
     
-    # Check if using Streamlit secrets
-    if hasattr(st, 'secrets') and 'data_sources' in st.secrets:
-        if 'urls' in st.secrets['data_sources']:
-            urls = st.secrets['data_sources']['urls']
-        else:
-            st.error("No data sources configured in Streamlit Secrets")
-            return None, None, False
+    uploaded_files = st.file_uploader(
+        "Upload Historical Database CSV Files",
+        accept_multiple_files=True,
+        type="csv",
+        help="Upload 2+ years of historical data with booking_created_date column"
+    )
+    
+    if uploaded_files:
+        st.success(f"✅ {len(uploaded_files)} files uploaded")
+    
+    st.header("📅 Prediction Period")
+    
+    # Date selection
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "Start Date",
+            value=datetime.now().date() + timedelta(days=1),
+            min_value=datetime.now().date(),
+            help="Select the first day of your 7-day forecast"
+        )
+    
+    with col2:
+        # Automatically set end date to 6 days after start
+        end_date = start_date + timedelta(days=6)
+        st.date_input(
+            "End Date",
+            value=end_date,
+            disabled=True,
+            help="Automatically set to 7 days"
+        )
+    
+    st.info(f"📊 Forecasting {start_date.strftime('%a %d %b')} to {end_date.strftime('%a %d %b %Y')}")
+    
+    # Check if forecast is within next 7 days
+    days_until_start = (start_date - datetime.now().date()).days
+    enable_prebooking = days_until_start >= 0 and days_until_start <= 7
+    
+    # Prebooking inputs section
+    st.header("📋 Current Prebookings")
+    
+    if enable_prebooking:
+        st.markdown("*Enter current prebooking numbers (optional)*")
+        
+        prebooking_inputs = {}
+        for i in range(7):
+            date = start_date + timedelta(days=i)
+            days_until = (date - datetime.now().date()).days
+            
+            if days_until > 0:
+                prebooking_inputs[date] = st.number_input(
+                    f"{date.strftime('%a %d/%m')} ({days_until}d away)",
+                    min_value=0,
+                    value=0,
+                    help=f"Current prebookings for {date.strftime('%A')}"
+                )
+        
+        use_prebooking = st.checkbox(
+            "Apply Prebooking Analysis",
+            value=True,
+            help="Use prebooking patterns to refine predictions"
+        )
     else:
-        # Use hardcoded URLs (for development)
-        urls = {
-            "2023 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2023%20Database.csv?d=we657154067c940328761d938dedbc3be&csf=1&web=1&e=MAdmc5E",
-            "2024 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2024%20Database.csv?d=w278f821dc65c482b98eea62c052938e1&csf=1&web=1&e=KftCMZ",
-            "2025 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2025%20Database.csv?d=w47f555cd3ddb4db59156f788b2cbf512&csf=1&web=1&e=kEMwo8"
-        }
+        st.warning("Prebooking analysis only available for predictions within next 7 days")
+        prebooking_inputs = {}
+        use_prebooking = False
     
-    # Download files
-    data_files = []
-    for filename, url in urls.items():
-        if url and url != "YOUR_URL_HERE":
-            with st.spinner(f"Downloading {filename}..."):
-                content = download_from_url(url)
-                if content:
-                    data_files.append({
-                        'name': filename,
-                        'data': content
-                    })
+    st.header("⚙️ Model Settings")
     
-    if not data_files:
-        return None, None, False
+    confidence_level = st.slider(
+        "Confidence Interval (%)",
+        80, 99, 95,
+        help="Confidence level for prediction intervals"
+    )
     
-    # Process files
+    apply_holidays = st.checkbox(
+        "Apply UK Holiday Patterns",
+        value=True,
+        help="Apply assisted travel holiday behavior"
+    )
+    
+    show_components = st.checkbox(
+        "Show Prediction Components",
+        value=True,
+        help="Break down how each prediction is calculated"
+    )
+    
+    st.header("🎯 Operational Thresholds")
+    
+    low_threshold = st.number_input(
+        "Low Demand Threshold",
+        min_value=0,
+        value=150,
+        help="Below this = low staffing needed"
+    )
+    
+    high_threshold = st.number_input(
+        "High Demand Threshold", 
+        min_value=0,
+        value=300,
+        help="Above this = full staffing needed"
+    )
+
+# ============================================================================
+# DATA PROCESSING FUNCTIONS
+# ============================================================================
+
+def process_historical_data(uploaded_files):
+    """Process historical data for training - handles booking_created_date if present"""
+    if not uploaded_files:
+        return None, None
+    
     yearly_data = {}
     has_prebooking_data = False
     
-    for file_info in data_files:
+    for file in uploaded_files:
         try:
-            file_name = file_info['name']
-            year = int(file_name.split()[0])
+            year = int(file.name.split()[0])
+            df = pd.read_csv(file, low_memory=False)
             
-            df = pd.read_csv(io.BytesIO(file_info['data']), low_memory=False)
+            # Filter for Euston
             df_euston = df[df['station_code'] == "EUS"].copy()
             
+            # Check if prebooking data is available
             if 'booking_created_date' in df_euston.columns:
                 has_prebooking_data = True
             
@@ -348,11 +458,11 @@ def load_and_process_data():
                 yearly_data[year] = df_euston
                 
         except Exception as e:
-            st.error(f"Error processing {file_name}: {str(e)}")
+            st.error(f"Error processing {file.name}: {str(e)}")
             continue
     
     if not yearly_data:
-        return None, None, False
+        return None, None
     
     # Process each year
     processed_years = {}
@@ -365,6 +475,7 @@ def load_and_process_data():
             errors='coerce'
         )
         
+        # Convert booking_created_date if present
         if 'booking_created_date' in df.columns:
             df['booking_created_date'] = pd.to_datetime(
                 df['booking_created_date'],
@@ -381,6 +492,7 @@ def load_and_process_data():
         year_start = pd.Timestamp(f'{year}-01-01')
         year_end = pd.Timestamp(f'{year}-12-31')
         
+        # Handle partial years
         if daily_bookings['scheduled_departure_date'].min() > year_start:
             year_start = daily_bookings['scheduled_departure_date'].min()
         if daily_bookings['scheduled_departure_date'].max() < year_end:
@@ -399,21 +511,17 @@ def load_and_process_data():
         
         processed_years[year] = yearly_bookings
     
-    # Combine raw data if prebooking analysis needed
-    all_raw_data = None
+    # Combine all raw data if prebooking analysis needed
     if has_prebooking_data:
         all_raw_data = pd.concat([yearly_data[year] for year in yearly_data.keys()])
+        return processed_years, all_raw_data
     
-    return processed_years, all_raw_data, has_prebooking_data
+    return processed_years, None
 
-# ============================================================================
-# MODEL TRAINING AND PREDICTION
-# ============================================================================
-
-@st.cache_resource(show_spinner=False)
 def train_prediction_model(processed_years):
     """Train the base model on all historical data"""
     
+    # Combine all historical data
     all_historical = pd.concat(processed_years.values())
     
     # Calculate growth trend
@@ -425,8 +533,9 @@ def train_prediction_model(processed_years):
     years = [x[0] for x in yearly_totals]
     totals = [x[1] for x in yearly_totals]
     
-    # Calculate growth factor
+    # Calculate growth factor (adaptive method)
     if len(years) >= 2:
+        # Year-over-year growth rates
         growth_rates = []
         for i in range(1, len(yearly_totals)):
             prev_total = yearly_totals[i-1][1]
@@ -434,6 +543,7 @@ def train_prediction_model(processed_years):
             growth = (curr_total - prev_total) / prev_total if prev_total > 0 else 0
             growth_rates.append(growth)
         
+        # Weight recent years more
         if len(growth_rates) > 1:
             weights = [0.7 ** (len(growth_rates) - i - 1) for i in range(len(growth_rates))]
             weights = [w / sum(weights) for w in weights]
@@ -441,35 +551,39 @@ def train_prediction_model(processed_years):
         else:
             avg_growth = growth_rates[0]
         
+        # Project to current year
         years_ahead = datetime.now().year - years[-1]
         growth_factor = (1 + avg_growth) ** years_ahead
     else:
         growth_factor = 1.1
     
-    # Calculate seasonal baseline
+    # Calculate seasonal baseline (median approach)
     seasonal_baseline = all_historical.groupby('day_of_year')['bookings'].median().to_dict()
     
-    # Fill missing days
+    # Fill missing days with interpolation
     all_days = range(1, 367)
     for day in all_days:
         if day not in seasonal_baseline:
+            # Find nearest days
             nearby_days = [d for d in seasonal_baseline.keys() if abs(d - day) <= 7]
             if nearby_days:
                 seasonal_baseline[day] = np.mean([seasonal_baseline[d] for d in nearby_days])
             else:
                 seasonal_baseline[day] = all_historical['bookings'].median()
     
-    # Calculate factors
+    # Calculate day-of-week factors
     dow_medians = all_historical.groupby('day_of_week')['bookings'].median()
     overall_median = all_historical['bookings'].median()
     dow_factors = (dow_medians / overall_median).to_dict() if overall_median > 0 else {}
     
+    # Calculate monthly factors
     monthly_medians = all_historical.groupby('month')['bookings'].median()
     monthly_factors = (monthly_medians / overall_median).to_dict() if overall_median > 0 else {}
     
+    # Calculate prediction intervals based on historical variance
     daily_std = all_historical.groupby('day_of_year')['bookings'].std().to_dict()
     
-    return {
+    model = {
         'seasonal_baseline': seasonal_baseline,
         'dow_factors': dow_factors,
         'monthly_factors': monthly_factors,
@@ -479,57 +593,60 @@ def train_prediction_model(processed_years):
         'years_trained': years,
         'total_days': len(all_historical)
     }
+    
+    return model
 
-@st.cache_resource(show_spinner=False)
-def analyze_prebookings(raw_data):
-    """Analyze prebooking patterns"""
-    if raw_data is not None and 'booking_created_date' in raw_data.columns:
-        analyzer = PrebookingAnalyzer()
-        analyzer.analyze_prebooking_patterns(raw_data)
-        return analyzer
-    return None
-
-def predict_future_demand(model, prebooking_analyzer, start_date, 
-                         prebooking_inputs=None, apply_holidays=True, 
-                         confidence_level=95, use_prebooking=False):
+def predict_future_demand_with_prebooking(model, prebooking_analyzer, start_date, 
+                                         prebooking_inputs=None, apply_holidays=True, 
+                                         confidence_level=95, use_prebooking=False):
     """Generate predictions with optional prebooking adjustments"""
     
+    # Initialize holiday patterns
     holiday_model = AssistedTravelHolidayPatterns() if apply_holidays else None
+    
+    # Generate date range
     dates = pd.date_range(start=start_date, periods=7, freq='D')
+    
     predictions = []
     
     for date in dates:
+        # Get base components
         day_of_year = date.dayofyear
         day_of_week = date.dayofweek
         month = date.month
         
-        # Base prediction
+        # Seasonal baseline
         base_value = model['seasonal_baseline'].get(day_of_year, 
                                                    np.mean(list(model['seasonal_baseline'].values())))
+        
+        # Apply factors
         dow_factor = model['dow_factors'].get(day_of_week, 1.0)
         month_factor = model['monthly_factors'].get(month, 1.0)
         
+        # Holiday factor
         holiday_factor = 1.0
         holiday_name = None
         if holiday_model:
             holiday_factor, holiday_name = holiday_model.get_holiday_factor(date)
         
+        # Combine all factors for base prediction
         base_prediction = base_value * dow_factor * month_factor * model['growth_factor'] * holiday_factor
         
-        # Confidence intervals
+        # Calculate confidence intervals
         std_dev = model['daily_std'].get(day_of_year, model['overall_std'])
         z_score = stats.norm.ppf((1 + confidence_level/100) / 2)
-        margin = z_score * std_dev * 0.5
+        margin = z_score * std_dev * 0.5  # Reduce margin for more realistic intervals
         
         lower_bound = max(0, base_prediction - margin)
         upper_bound = base_prediction + margin
         
-        # Prebooking adjustment
+        # Initialize prebooking analysis
         prebooking_adjustment = 1.0
         prebooking_flag = None
         prebooking_analysis = None
         final_prediction = base_prediction
         
+        # Apply prebooking analysis if enabled and available
         if use_prebooking and prebooking_analyzer and prebooking_inputs:
             current_prebookings = prebooking_inputs.get(date.date(), 0)
             days_until = (date.date() - datetime.now().date()).days
@@ -542,15 +659,20 @@ def predict_future_demand(model, prebooking_analyzer, start_date,
                 prebooking_analysis = analysis
                 predicted_from_prebooking = analysis['predicted_final_demand'] if analysis else base_prediction
                 
+                # Apply business rules
                 if adjustment_ratio < 1.0:
+                    # Lower than expected - just flag it
                     prebooking_flag = f"⚠️ Lower demand signal: {explanation}"
-                    final_prediction = base_prediction
+                    final_prediction = base_prediction  # Keep original
                 else:
+                    # Higher than expected
                     if predicted_from_prebooking <= upper_bound:
+                        # Within confidence interval - update prediction
                         final_prediction = predicted_from_prebooking
                         prebooking_flag = f"✅ Updated based on prebookings: {explanation}"
                         prebooking_adjustment = adjustment_ratio
                     else:
+                        # Outside confidence interval - keep original but flag
                         final_prediction = base_prediction
                         prebooking_flag = f"🔴 High prebooking signal (exceeds confidence): {explanation}"
         
@@ -575,7 +697,7 @@ def predict_future_demand(model, prebooking_analyzer, start_date,
     return pd.DataFrame(predictions)
 
 def categorize_demand(value, low_threshold, high_threshold):
-    """Categorize demand level"""
+    """Categorize demand level for operational planning"""
     if value < low_threshold:
         return "Low", "🟢"
     elif value < high_threshold:
@@ -584,391 +706,328 @@ def categorize_demand(value, low_threshold, high_threshold):
         return "High", "🔴"
 
 # ============================================================================
-# INITIALIZE SESSION STATE
-# ============================================================================
-
-if 'data_loaded' not in st.session_state:
-    st.session_state.data_loaded = False
-    st.session_state.processed_years = None
-    st.session_state.raw_data = None
-    st.session_state.has_prebooking_data = False
-    st.session_state.model = None
-    st.session_state.prebooking_analyzer = None
-
-# Load data on startup
-if not st.session_state.data_loaded:
-    with st.spinner("Loading historical data..."):
-        processed_years, raw_data, has_prebooking_data = load_and_process_data()
-        
-        if processed_years and len(processed_years) >= 2:
-            st.session_state.processed_years = processed_years
-            st.session_state.raw_data = raw_data
-            st.session_state.has_prebooking_data = has_prebooking_data
-            st.session_state.data_loaded = True
-            
-            # Train model
-            st.session_state.model = train_prediction_model(processed_years)
-            
-            # Analyze prebookings if available
-            if raw_data is not None and has_prebooking_data:
-                st.session_state.prebooking_analyzer = analyze_prebookings(raw_data)
-            
-            st.success(f"✅ Loaded {len(processed_years)} years of historical data")
-
-# ============================================================================
-# SIDEBAR
-# ============================================================================
-
-with st.sidebar:
-    st.header("📅 Prediction Period")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input(
-            "Start Date",
-            value=datetime.now().date() + timedelta(days=1),
-            min_value=datetime.now().date(),
-            help="First day of 7-day forecast"
-        )
-    
-    with col2:
-        end_date = start_date + timedelta(days=6)
-        st.date_input(
-            "End Date",
-            value=end_date,
-            disabled=True,
-            help="Automatically set to 7 days"
-        )
-    
-    st.info(f"📊 Forecasting {start_date.strftime('%a %d %b')} to {end_date.strftime('%a %d %b %Y')}")
-    
-    # Prebooking inputs
-    days_until_start = (start_date - datetime.now().date()).days
-    enable_prebooking = days_until_start >= 0 and days_until_start <= 7
-    
-    st.header("📋 Current Prebookings")
-    
-    prebooking_inputs = {}
-    use_prebooking = False
-    
-    if st.session_state.data_loaded and enable_prebooking and st.session_state.has_prebooking_data:
-        st.markdown("*Enter current booking numbers*")
-        
-        for i in range(7):
-            date = start_date + timedelta(days=i)
-            days_until = (date - datetime.now().date()).days
-            
-            if days_until > 0:
-                prebooking_inputs[date] = st.number_input(
-                    f"{date.strftime('%a %d/%m')} ({days_until}d away)",
-                    min_value=0,
-                    value=0,
-                    step=1,
-                    help=f"Bookings already made for {date.strftime('%A')}"
-                )
-        
-        use_prebooking = st.checkbox(
-            "Apply Prebooking Analysis",
-            value=True,
-            help="Adjust predictions based on current booking levels"
-        )
-    elif not enable_prebooking:
-        st.info("Available for predictions within 7 days")
-    elif not st.session_state.has_prebooking_data:
-        st.warning("No booking date data available")
-    
-    st.header("⚙️ Settings")
-    
-    confidence_level = st.slider(
-        "Confidence Interval (%)",
-        80, 99, 95,
-        help="Width of prediction intervals"
-    )
-    
-    apply_holidays = st.checkbox(
-        "Apply UK Holiday Patterns",
-        value=True,
-        help="Adjust for bank holiday travel"
-    )
-    
-    show_components = st.checkbox(
-        "Show Prediction Components",
-        value=True,
-        help="Display calculation breakdown"
-    )
-    
-    st.header("🎯 Operational Thresholds")
-    
-    low_threshold = st.number_input(
-        "Low Demand Threshold",
-        min_value=0,
-        value=150,
-        help="Below = low staffing"
-    )
-    
-    high_threshold = st.number_input(
-        "High Demand Threshold", 
-        min_value=0,
-        value=300,
-        help="Above = full staffing"
-    )
-
-# ============================================================================
 # MAIN APPLICATION
 # ============================================================================
 
-if st.session_state.data_loaded and st.session_state.model:
-    # Generate predictions
-    with st.spinner("Generating predictions..."):
-        predictions_df = predict_future_demand(
-            st.session_state.model, 
-            st.session_state.prebooking_analyzer,
-            start_date, 
-            prebooking_inputs=prebooking_inputs if use_prebooking else None,
-            apply_holidays=apply_holidays,
-            confidence_level=confidence_level,
-            use_prebooking=use_prebooking
-        )
-    
-    # Display results
-    st.header("📊 7-Day Demand Forecast")
-    
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    total_predicted = predictions_df['final_prediction'].sum()
-    avg_daily = predictions_df['final_prediction'].mean()
-    peak_day = predictions_df.loc[predictions_df['final_prediction'].idxmax()]
-    low_day = predictions_df.loc[predictions_df['final_prediction'].idxmin()]
-    
-    with col1:
-        st.metric("Total Week Demand", f"{total_predicted:,.0f}")
-    with col2:
-        st.metric("Average Daily", f"{avg_daily:.0f}")
-    with col3:
-        st.metric("Peak Day", f"{peak_day['day_name'][:3]} ({peak_day['final_prediction']:,.0f})")
-    with col4:
-        st.metric("Lowest Day", f"{low_day['day_name'][:3]} ({low_day['final_prediction']:,.0f})")
-    
-    # Chart
-    fig = go.Figure()
-    
-    # Confidence interval
-    fig.add_trace(go.Scatter(
-        x=predictions_df['date'],
-        y=predictions_df['upper_bound'],
-        fill=None,
-        mode='lines',
-        line_color='rgba(0,100,80,0)',
-        showlegend=False
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=predictions_df['date'],
-        y=predictions_df['lower_bound'],
-        fill='tonexty',
-        mode='lines',
-        line_color='rgba(0,100,80,0)',
-        name=f'{confidence_level}% Confidence Interval',
-        fillcolor='rgba(68, 185, 255, 0.2)'
-    ))
-    
-    # Base prediction line (if using prebooking)
-    if use_prebooking and any(predictions_df['base_prediction'] != predictions_df['final_prediction']):
-        fig.add_trace(go.Scatter(
-            x=predictions_df['date'],
-            y=predictions_df['base_prediction'],
-            mode='lines+markers',
-            name='Base Prediction',
-            line=dict(color='gray', width=2, dash='dot'),
-            marker=dict(size=8)
-        ))
-    
-    # Final prediction line
-    fig.add_trace(go.Scatter(
-        x=predictions_df['date'],
-        y=predictions_df['final_prediction'],
-        mode='lines+markers',
-        name='Final Prediction',
-        line=dict(color='rgb(31, 119, 180)', width=3),
-        marker=dict(size=10)
-    ))
-    
-    # Threshold lines
-    fig.add_hline(y=low_threshold, line_dash="dash", line_color="green", 
-                 annotation_text="Low Threshold")
-    fig.add_hline(y=high_threshold, line_dash="dash", line_color="red",
-                 annotation_text="High Threshold")
-    
-    # Holiday markers
-    holiday_dates = predictions_df[predictions_df['holiday_name'].notna()]
-    if not holiday_dates.empty:
-        fig.add_trace(go.Scatter(
-            x=holiday_dates['date'],
-            y=holiday_dates['final_prediction'],
-            mode='markers',
-            name='Holiday Impact',
-            marker=dict(size=15, symbol='star', color='gold'),
-            text=holiday_dates['holiday_name'],
-            hovertemplate='%{text}<br>Demand: %{y}<extra></extra>'
-        ))
-    
-    fig.update_layout(
-        title="7-Day Demand Forecast",
-        xaxis_title="Date",
-        yaxis_title="Predicted Bookings",
-        height=500,
-        hovermode='x unified'
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Prebooking analysis results
-    if use_prebooking and any(predictions_df['prebooking_flag'].notna()):
-        st.header("📋 Prebooking Analysis")
-        
-        for _, row in predictions_df.iterrows():
-            if row['prebooking_flag']:
-                date_str = row['date'].strftime('%A %d %b')
-                st.write(f"**{date_str}**: {row['prebooking_flag']}")
+def main():
+    try:
+        if uploaded_files:
+            # Process historical data
+            with st.spinner("Processing historical data..."):
+                processed_years, raw_data = process_historical_data(uploaded_files)
                 
-                if row['prebooking_analysis']:
-                    analysis = row['prebooking_analysis']
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Current Prebookings", 
-                                 f"{analysis['actual_prebookings']:.0f}")
-                    with col2:
-                        st.metric("Expected Prebookings", 
-                                 f"{analysis['expected_prebookings']:.0f}")
-                    with col3:
-                        st.metric("Implied Final Demand", 
-                                 f"{analysis['predicted_final_demand']:.0f}")
-    
-    # Detailed table
-    st.header("📋 Detailed Daily Predictions")
-    
-    display_df = predictions_df.copy()
-    display_df['Demand Level'] = display_df['final_prediction'].apply(
-        lambda x: categorize_demand(x, low_threshold, high_threshold)[1] + " " + 
-                 categorize_demand(x, low_threshold, high_threshold)[0]
-    )
-    
-    display_df['Date'] = display_df['date'].dt.strftime('%a %d %b')
-    display_df['Prediction'] = display_df['final_prediction'].apply(lambda x: f"{x:,.0f}")
-    display_df['Range'] = display_df.apply(
-        lambda x: f"{x['lower_bound']:,.0f} - {x['upper_bound']:,.0f}", axis=1
-    )
-    display_df['Holiday'] = display_df['holiday_name'].fillna('-')
-    
-    display_columns = ['Date', 'Prediction', 'Range', 'Demand Level', 'Holiday']
-    if use_prebooking:
-        display_df['Prebooking Adj'] = display_df.apply(
-            lambda x: f"{x['prebooking_adjustment']:.2f}x" if x['prebooking_adjustment'] != 1.0 else "-", 
-            axis=1
-        )
-        display_columns.append('Prebooking Adj')
-    
-    st.dataframe(
-        display_df[display_columns],
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    # Component breakdown
-    if show_components:
-        st.header("🔧 Prediction Components")
-        
-        components_df = predictions_df[[
-            'date', 'base_value', 'dow_factor', 'month_factor', 
-            'holiday_factor', 'growth_factor', 'final_prediction'
-        ]].copy()
-        
-        if use_prebooking:
-            components_df['prebooking_adjustment'] = predictions_df['prebooking_adjustment']
-        
-        components_df['Date'] = components_df['date'].dt.strftime('%a %d %b')
-        components_df = components_df.drop('date', axis=1)
-        
-        column_names = {
-            'Date': 'Date',
-            'base_value': 'Seasonal Base', 
-            'dow_factor': 'Day of Week',
-            'month_factor': 'Monthly',
-            'holiday_factor': 'Holiday',
-            'growth_factor': 'Growth',
-            'final_prediction': 'Final Prediction'
-        }
-        
-        if use_prebooking:
-            column_names['prebooking_adjustment'] = 'Prebooking'
-        
-        components_df.rename(columns={v: k for k, v in column_names.items()}, inplace=True)
-        components_df.columns = list(column_names.values())
-        
-        st.dataframe(
-            components_df,
-            use_container_width=True,
-            hide_index=True
-        )
-    
-    # Operational recommendations
-    st.header("🎯 Operational Recommendations")
-    
-    high_days = predictions_df[predictions_df['final_prediction'] > high_threshold]
-    low_days = predictions_df[predictions_df['final_prediction'] < low_threshold]
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("⚠️ High Demand Days")
-        if not high_days.empty:
-            for _, day in high_days.iterrows():
-                st.warning(f"**{day['date'].strftime('%A %d %b')}**: {day['final_prediction']:,.0f} bookings expected")
-            st.info("💡 Ensure full staffing and additional resources")
+                if processed_years is None or len(processed_years) < 2:
+                    st.error("Need at least 2 years of historical data for reliable predictions")
+                    return
+            
+            # Train base model
+            with st.spinner("Training prediction model..."):
+                model = train_prediction_model(processed_years)
+            
+            # Initialize prebooking analyzer if data available
+            prebooking_analyzer = None
+            if raw_data is not None and 'booking_created_date' in raw_data.columns:
+                with st.spinner("Analyzing prebooking patterns..."):
+                    prebooking_analyzer = PrebookingAnalyzer()
+                    prebooking_analyzer.analyze_prebooking_patterns(raw_data)
+                    st.success("✅ Prebooking patterns analyzed")
+            else:
+                if use_prebooking:
+                    st.warning("⚠️ No booking_created_date column found - prebooking analysis unavailable")
+            
+            # Show model info
+            st.success(f"✅ Model trained on {len(model['years_trained'])} years of data ({min(model['years_trained'])}-{max(model['years_trained'])})")
+            
+            # Generate predictions
+            with st.spinner("Generating predictions..."):
+                predictions_df = predict_future_demand_with_prebooking(
+                    model, 
+                    prebooking_analyzer,
+                    start_date, 
+                    prebooking_inputs=prebooking_inputs if use_prebooking else None,
+                    apply_holidays=apply_holidays,
+                    confidence_level=confidence_level,
+                    use_prebooking=use_prebooking and prebooking_analyzer is not None
+                )
+            
+            # Display predictions
+            st.header("📊 7-Day Demand Forecast")
+            
+            # Summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            total_predicted = predictions_df['final_prediction'].sum()
+            avg_daily = predictions_df['final_prediction'].mean()
+            peak_day = predictions_df.loc[predictions_df['final_prediction'].idxmax()]
+            low_day = predictions_df.loc[predictions_df['final_prediction'].idxmin()]
+            
+            with col1:
+                st.metric("Total Week Demand", f"{total_predicted:,.0f}")
+            with col2:
+                st.metric("Average Daily", f"{avg_daily:.0f}")
+            with col3:
+                st.metric("Peak Day", f"{peak_day['day_name'][:3]} ({peak_day['final_prediction']:,.0f})")
+            with col4:
+                st.metric("Lowest Day", f"{low_day['day_name'][:3]} ({low_day['final_prediction']:,.0f})")
+            
+            # Visualization
+            fig = go.Figure()
+            
+            # Add confidence interval
+            fig.add_trace(go.Scatter(
+                x=predictions_df['date'],
+                y=predictions_df['upper_bound'],
+                fill=None,
+                mode='lines',
+                line_color='rgba(0,100,80,0)',
+                showlegend=False
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=predictions_df['date'],
+                y=predictions_df['lower_bound'],
+                fill='tonexty',
+                mode='lines',
+                line_color='rgba(0,100,80,0)',
+                name=f'{confidence_level}% Confidence Interval',
+                fillcolor='rgba(68, 185, 255, 0.2)'
+            ))
+            
+            # Base prediction line (if different from final)
+            if use_prebooking and any(predictions_df['base_prediction'] != predictions_df['final_prediction']):
+                fig.add_trace(go.Scatter(
+                    x=predictions_df['date'],
+                    y=predictions_df['base_prediction'],
+                    mode='lines+markers',
+                    name='Base Prediction',
+                    line=dict(color='gray', width=2, dash='dot'),
+                    marker=dict(size=8)
+                ))
+            
+            # Final prediction line
+            fig.add_trace(go.Scatter(
+                x=predictions_df['date'],
+                y=predictions_df['final_prediction'],
+                mode='lines+markers',
+                name='Final Prediction',
+                line=dict(color='rgb(31, 119, 180)', width=3),
+                marker=dict(size=10)
+            ))
+            
+            # Add threshold lines
+            fig.add_hline(y=low_threshold, line_dash="dash", line_color="green", 
+                         annotation_text="Low Threshold")
+            fig.add_hline(y=high_threshold, line_dash="dash", line_color="red",
+                         annotation_text="High Threshold")
+            
+            # Mark holidays
+            holiday_dates = predictions_df[predictions_df['holiday_name'].notna()]
+            if not holiday_dates.empty:
+                fig.add_trace(go.Scatter(
+                    x=holiday_dates['date'],
+                    y=holiday_dates['final_prediction'],
+                    mode='markers',
+                    name='Holiday Impact',
+                    marker=dict(size=15, symbol='star', color='gold'),
+                    text=holiday_dates['holiday_name'],
+                    hovertemplate='%{text}<br>Demand: %{y}<extra></extra>'
+                ))
+            
+            fig.update_layout(
+                title="7-Day Demand Forecast with Prebooking Intelligence",
+                xaxis_title="Date",
+                yaxis_title="Predicted Bookings",
+                height=500,
+                hovermode='x unified'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Prebooking Analysis Results
+            if use_prebooking and any(predictions_df['prebooking_flag'].notna()):
+                st.header("📋 Prebooking Analysis Results")
+                
+                for _, row in predictions_df.iterrows():
+                    if row['prebooking_flag']:
+                        date_str = row['date'].strftime('%A %d %b')
+                        st.write(f"**{date_str}**: {row['prebooking_flag']}")
+                        
+                        if row['prebooking_analysis']:
+                            analysis = row['prebooking_analysis']
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Current Prebookings", 
+                                         f"{analysis['actual_prebookings']:.0f}")
+                            with col2:
+                                st.metric("Expected Prebookings", 
+                                         f"{analysis['expected_prebookings']:.0f}")
+                            with col3:
+                                st.metric("Implied Final Demand", 
+                                         f"{analysis['predicted_final_demand']:.0f}")
+            
+            # Detailed predictions table
+            st.header("📋 Detailed Daily Predictions")
+            
+            # Prepare display dataframe
+            display_df = predictions_df.copy()
+            
+            # Add demand category
+            display_df['Demand Level'] = display_df['final_prediction'].apply(
+                lambda x: categorize_demand(x, low_threshold, high_threshold)[1] + " " + 
+                         categorize_demand(x, low_threshold, high_threshold)[0]
+            )
+            
+            # Format columns
+            display_df['Date'] = display_df['date'].dt.strftime('%a %d %b')
+            display_df['Base Prediction'] = display_df['base_prediction'].apply(lambda x: f"{x:,.0f}")
+            display_df['Final Prediction'] = display_df['final_prediction'].apply(lambda x: f"{x:,.0f}")
+            display_df['Range'] = display_df.apply(
+                lambda x: f"{x['lower_bound']:,.0f} - {x['upper_bound']:,.0f}", axis=1
+            )
+            display_df['Holiday'] = display_df['holiday_name'].fillna('-')
+            display_df['Prebooking Adj'] = display_df.apply(
+                lambda x: f"{x['prebooking_adjustment']:.2f}x" if x['prebooking_adjustment'] != 1.0 else "-", 
+                axis=1
+            )
+            
+            # Select columns to display
+            display_columns = ['Date', 'Base Prediction', 'Final Prediction', 'Range', 
+                              'Demand Level', 'Holiday', 'Prebooking Adj']
+            
+            st.dataframe(
+                display_df[display_columns],
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Component breakdown
+            if show_components:
+                st.header("🔧 Prediction Components Breakdown")
+                
+                components_df = predictions_df[[
+                    'date', 'base_value', 'dow_factor', 'month_factor', 
+                    'holiday_factor', 'growth_factor', 'prebooking_adjustment', 'final_prediction'
+                ]].copy()
+                
+                components_df['Date'] = components_df['date'].dt.strftime('%a %d %b')
+                components_df = components_df.drop('date', axis=1)
+                
+                # Rename columns
+                components_df.columns = [
+                    'Date', 'Seasonal Base', 'Day of Week', 'Monthly', 
+                    'Holiday', 'Growth', 'Prebooking', 'Final Prediction'
+                ]
+                
+                st.dataframe(
+                    components_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Explanation
+                with st.expander("📖 Understanding the Components"):
+                    st.markdown("""
+                    **How predictions are calculated:**
+                    
+                    1. **Seasonal Base**: Historical median demand for this day of year
+                    2. **Day of Week**: Multiplier based on weekday patterns (Tue-Thu typically higher)
+                    3. **Monthly**: Seasonal adjustment by month
+                    4. **Holiday**: UK bank holiday effects (bookend pattern for assisted travel)
+                    5. **Growth**: Year-over-year growth projection
+                    6. **Prebooking**: Adjustment based on current booking levels
+                    7. **Final = Base × DoW × Monthly × Holiday × Growth × Prebooking**
+                    
+                    **Prebooking Logic:**
+                    - If prebookings indicate **lower** demand → Flag only (no adjustment)
+                    - If prebookings indicate **higher** demand:
+                      - Within confidence interval → Update prediction
+                      - Outside confidence interval → Flag only
+                    """)
+            
+            # Operational recommendations
+            st.header("🎯 Operational Recommendations")
+            
+            high_days = predictions_df[predictions_df['final_prediction'] > high_threshold]
+            low_days = predictions_df[predictions_df['final_prediction'] < low_threshold]
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("⚠️ High Demand Days")
+                if not high_days.empty:
+                    for _, day in high_days.iterrows():
+                        st.warning(f"**{day['date'].strftime('%A %d %b')}**: {day['final_prediction']:,.0f} bookings expected")
+                    st.info("💡 Ensure full staffing and additional resources")
+                else:
+                    st.success("No days exceed high threshold")
+            
+            with col2:
+                st.subheader("✅ Low Demand Days")
+                if not low_days.empty:
+                    for _, day in low_days.iterrows():
+                        st.info(f"**{day['date'].strftime('%A %d %b')}**: {day['final_prediction']:,.0f} bookings expected")
+                    st.success("💡 Opportunity for training or maintenance")
+                else:
+                    st.info("No days below low threshold")
+            
+            # Export functionality
+            st.header("📥 Export Predictions")
+            
+            # Prepare export data
+            export_df = predictions_df[[
+                'date', 'base_prediction', 'final_prediction', 'lower_bound', 
+                'upper_bound', 'holiday_name', 'prebooking_flag'
+            ]].copy()
+            export_df['date'] = export_df['date'].dt.strftime('%Y-%m-%d')
+            export_df.columns = ['Date', 'Base_Prediction', 'Final_Prediction', 
+                                'Lower_Bound', 'Upper_Bound', 'Holiday', 'Prebooking_Note']
+            
+            csv = export_df.to_csv(index=False)
+            
+            st.download_button(
+                label="Download Predictions as CSV",
+                data=csv,
+                file_name=f"integrated_forecast_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+            
         else:
-            st.success("No days exceed high threshold")
+            st.info("👆 Please upload historical data files to begin forecasting")
+            
+            with st.expander("📚 How to Use This Tool"):
+                st.markdown("""
+                **Step 1: Upload Historical Data**
+                - Upload at least 2 years of booking data CSV files
+                - Files should include `booking_created_date` column for prebooking analysis
+                - Files should be named with the year (e.g., "2023 Database.csv")
+                
+                **Step 2: Select Forecast Period**
+                - Choose your start date (must be in the future)
+                - The tool automatically forecasts 7 days ahead
+                - Prebooking inputs are available only for predictions within next 7 days
+                
+                **Step 3: Enter Prebooking Data (Optional)**
+                - If forecasting within 7 days, enter current prebooking numbers
+                - The system will analyze if demand is trending higher or lower
+                - Predictions are adjusted based on prebooking patterns
+                
+                **Step 4: Review Results**
+                - Check the forecast chart with confidence intervals
+                - Review prebooking flags for each day
+                - Note any holiday impacts
+                - Use operational recommendations for planning
+                
+                **Prebooking Intelligence:**
+                - 🟢 **Lower demand signal**: Prebookings below expected (no adjustment)
+                - ✅ **Updated prediction**: Higher prebookings within confidence (adjusted up)
+                - 🔴 **High demand flag**: Very high prebookings (flagged but not adjusted)
+                """)
     
-    with col2:
-        st.subheader("✅ Low Demand Days")
-        if not low_days.empty:
-            for _, day in low_days.iterrows():
-                st.info(f"**{day['date'].strftime('%A %d %b')}**: {day['final_prediction']:,.0f} bookings expected")
-            st.success("💡 Opportunity for training or maintenance")
-        else:
-            st.info("No days below low threshold")
-    
-    # Export
-    st.header("📥 Export Predictions")
-    
-    export_df = predictions_df[[
-        'date', 'final_prediction', 'lower_bound', 
-        'upper_bound', 'holiday_name', 'prebooking_flag'
-    ]].copy()
-    export_df['date'] = export_df['date'].dt.strftime('%Y-%m-%d')
-    export_df.columns = ['Date', 'Prediction', 'Lower_Bound', 'Upper_Bound', 'Holiday', 'Prebooking_Note']
-    
-    csv = export_df.to_csv(index=False)
-    
-    st.download_button(
-        label="Download Predictions as CSV",
-        data=csv,
-        file_name=f"forecast_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        with st.expander("🔍 Error Details"):
+            import traceback
+            st.code(traceback.format_exc())
 
-else:
-    st.error("❌ Unable to load data. Please check your configuration.")
-    
-    st.markdown("""
-    ### Configure Data Source
-    
-    Add the following to your Streamlit Secrets:
-    
-    ```toml
-    [data_sources.urls]
-    "2023 Database.csv" = "your_sharepoint_url_here"
-    "2024 Database.csv" = "your_sharepoint_url_here"
-    "2025 Database.csv" = "your_sharepoint_url_here"
-    ```
-    """)
+if __name__ == "__main__":
+    main()
