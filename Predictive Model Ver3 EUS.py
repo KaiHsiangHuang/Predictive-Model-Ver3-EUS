@@ -7,11 +7,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
-import os
-import requests
 import io
-import gzip
-import pickle
 
 from scipy import stats
 from sklearn.linear_model import LinearRegression
@@ -279,66 +275,49 @@ class AssistedTravelHolidayPatterns:
             return {-2: 1.2, -1: 1.25, 0: 1.1, 1: 1.25, 2: 1.2}
 
 # ============================================================================
-# DATA LOADING AND PROCESSING
+# DATA LOADING - SIMPLE MANUAL UPLOAD ONLY
 # ============================================================================
-
-def download_from_url(url):
-    """Download file from direct URL"""
-    try:
-        response = requests.get(url, timeout=300)
-        if response.status_code == 200:
-            return response.content
-        else:
-            st.error(f"Error downloading file: HTTP {response.status_code}")
-            return None
-    except Exception as e:
-        st.error(f"Error downloading: {str(e)}")
-        return None
 
 @st.cache_data(show_spinner=False)
 def load_and_process_data():
-    """Load and process data from configured sources"""
+    """Load data from manual file upload"""
     
-    # Check if using Streamlit secrets
-    if hasattr(st, 'secrets') and 'data_sources' in st.secrets:
-        if 'urls' in st.secrets['data_sources']:
-            urls = st.secrets['data_sources']['urls']
-        else:
-            st.error("No data sources configured in Streamlit Secrets")
-            return None, None, False
-    else:
-        # Use hardcoded URLs (for development)
-        urls = {
-            "2023 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2023%20Database.csv?d=we657154067c940328761d938dedbc3be&csf=1&web=1&e=MAdmc5E",
-            "2024 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2024%20Database.csv?d=w278f821dc65c482b98eea62c052938e1&csf=1&web=1&e=KftCMZ",
-            "2025 Database.csv": "https://networkrail-my.sharepoint.com/:x:/r/personal/khuang_networkrail_co_uk/Documents/PA%20Predictive%20model%20database/2025%20Database.csv?d=w47f555cd3ddb4db59156f788b2cbf512&csf=1&web=1&e=kEMwo8"
-        }
+    st.markdown("""
+    ### 📁 Upload Data Files
+    Please upload your CSV files to begin.
+    """)
     
-    # Download files
-    data_files = []
-    for filename, url in urls.items():
-        if url and url != "YOUR_URL_HERE":
-            with st.spinner(f"Downloading {filename}..."):
-                content = download_from_url(url)
-                if content:
-                    data_files.append({
-                        'name': filename,
-                        'data': content
-                    })
+    uploaded_files = st.file_uploader(
+        "Choose CSV files",
+        type=['csv'],
+        accept_multiple_files=True,
+        help="Select 2023, 2024, and 2025 Database files"
+    )
     
-    if not data_files:
-        return None, None, False
+    if not uploaded_files:
+        st.info("Please upload at least 2 years of data (2023, 2024, and/or 2025 Database.csv)")
+        st.stop()
     
-    # Process files
+    # Process uploaded files
     yearly_data = {}
     has_prebooking_data = False
     
-    for file_info in data_files:
+    for uploaded_file in uploaded_files:
         try:
-            file_name = file_info['name']
-            year = int(file_name.split()[0])
+            # Extract year from filename
+            filename = uploaded_file.name
+            year = None
+            for y in [2023, 2024, 2025]:
+                if str(y) in filename:
+                    year = y
+                    break
             
-            df = pd.read_csv(io.BytesIO(file_info['data']), low_memory=False)
+            if year is None:
+                st.warning(f"Could not identify year from filename: {filename}")
+                continue
+            
+            # Read CSV
+            df = pd.read_csv(uploaded_file, low_memory=False)
             df_euston = df[df['station_code'] == "EUS"].copy()
             
             if 'booking_created_date' in df_euston.columns:
@@ -346,13 +325,15 @@ def load_and_process_data():
             
             if len(df_euston) > 0:
                 yearly_data[year] = df_euston
+                st.success(f"✅ Loaded {year} data: {len(df_euston):,} records")
                 
         except Exception as e:
-            st.error(f"Error processing {file_name}: {str(e)}")
+            st.error(f"Error processing {uploaded_file.name}: {str(e)}")
             continue
     
-    if not yearly_data:
-        return None, None, False
+    if len(yearly_data) < 2:
+        st.error("Need at least 2 years of data to generate predictions")
+        st.stop()
     
     # Process each year
     processed_years = {}
@@ -597,23 +578,22 @@ if 'data_loaded' not in st.session_state:
 
 # Load data on startup
 if not st.session_state.data_loaded:
-    with st.spinner("Loading historical data..."):
-        processed_years, raw_data, has_prebooking_data = load_and_process_data()
+    processed_years, raw_data, has_prebooking_data = load_and_process_data()
+    
+    if processed_years and len(processed_years) >= 2:
+        st.session_state.processed_years = processed_years
+        st.session_state.raw_data = raw_data
+        st.session_state.has_prebooking_data = has_prebooking_data
+        st.session_state.data_loaded = True
         
-        if processed_years and len(processed_years) >= 2:
-            st.session_state.processed_years = processed_years
-            st.session_state.raw_data = raw_data
-            st.session_state.has_prebooking_data = has_prebooking_data
-            st.session_state.data_loaded = True
-            
-            # Train model
-            st.session_state.model = train_prediction_model(processed_years)
-            
-            # Analyze prebookings if available
-            if raw_data is not None and has_prebooking_data:
-                st.session_state.prebooking_analyzer = analyze_prebookings(raw_data)
-            
-            st.success(f"✅ Loaded {len(processed_years)} years of historical data")
+        # Train model
+        st.session_state.model = train_prediction_model(processed_years)
+        
+        # Analyze prebookings if available
+        if raw_data is not None and has_prebooking_data:
+            st.session_state.prebooking_analyzer = analyze_prebookings(raw_data)
+        
+        st.success(f"✅ Loaded {len(processed_years)} years of historical data")
 
 # ============================================================================
 # SIDEBAR
@@ -958,17 +938,4 @@ if st.session_state.data_loaded and st.session_state.model:
     )
 
 else:
-    st.error("❌ Unable to load data. Please check your configuration.")
-    
-    st.markdown("""
-    ### Configure Data Source
-    
-    Add the following to your Streamlit Secrets:
-    
-    ```toml
-    [data_sources.urls]
-    "2023 Database.csv" = "your_sharepoint_url_here"
-    "2024 Database.csv" = "your_sharepoint_url_here"
-    "2025 Database.csv" = "your_sharepoint_url_here"
-    ```
-    """)
+    st.info("Please upload data files to begin prediction analysis.")
